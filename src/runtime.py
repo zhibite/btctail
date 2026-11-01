@@ -210,9 +210,8 @@ class Runtime:
             return self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
         if now >= aw.end_ts - self.settings.COLLECT_SEC:
             return self.settings.POLL_INTERVAL_MS / 1000.0
-        # Nothing to observe yet; wake up in time for the collection window
-        # and at least every couple of seconds to notice a slot change.
-        return max(0.5, min(2.0, aw.end_ts - self.settings.COLLECT_SEC - now))
+        # Before the collection window only the dashboard needs prices.
+        return self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
 
     async def _tick(self, now: float) -> None:
         self._cycle_count += 1
@@ -337,14 +336,13 @@ class Runtime:
         observe_from = aw.end_ts - max(
             self.settings.COLLECT_SEC, self.settings.ENTRY_WINDOW_SEC + 30
         )
-        if now < observe_from:
-            return
-
-        interval = (
-            self.settings.ENTRY_POLL_INTERVAL_MS
-            if now >= aw.entry_start_ts
-            else self.settings.POLL_INTERVAL_MS
-        ) / 1000.0
+        display_only = now < observe_from
+        if display_only:
+            interval = self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
+        elif now >= aw.entry_start_ts:
+            interval = self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
+        else:
+            interval = self.settings.POLL_INTERVAL_MS / 1000.0
         if now - aw.quote_ts < interval:
             return
 
@@ -358,6 +356,11 @@ class Runtime:
             return
         aw.quote = quote
         aw.quote_ts = self._now()
+
+        if display_only:
+            # Prices for the dashboard only: not sampled, not fed to the
+            # strategy (which ignores pre-window ticks anyway).
+            return
 
         if self.collector is not None:
             second = int(aw.quote_ts)

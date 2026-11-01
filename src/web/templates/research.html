@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070b10">
   <title>研究 / Agent · PolyTail</title>
   <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
   <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
@@ -25,9 +26,11 @@
         <h1>研究 / 参数 Agent</h1>
         <p>按策略独立研究；回测与优化强制样本外验证，Agent 不能直接改实盘参数</p>
       </div>
-      <div class="btn-row strategy-tabs">
-        <button class="btn small" data-rs-strategy="15m">15m</button>
-        <button class="btn small primary" data-rs-strategy="5m">5m</button>
+      <div class="btn-row">
+        <div class="segmented" role="group" aria-label="策略">
+          <button data-rs-strategy="15m">BTC 15m</button>
+          <button class="active" data-rs-strategy="5m">BTC 5m</button>
+        </div>
       </div>
     </div>
 
@@ -79,7 +82,7 @@
           <label class="field"><span class="label">入场价下限</span>
             <input type="number" data-field="bt-min_entry_price" value="0" min="0" max="0.95" step="0.005">
           </label>
-          <label class="field"><span class="label">单笔金额(U)</span>
+          <label class="field"><span class="label">回测名义金额(U)</span>
             <input type="number" data-field="bt-stake" value="10" min="1" max="1000" step="1">
           </label>
           <label class="field"><span class="label">滑点(概率点)</span>
@@ -90,7 +93,8 @@
           </label>
         </div>
         <div class="small faint" style="margin-top:8px">
-          切换上方策略标签会把该策略当前参数预填到这里。
+          切换上方策略标签会把该策略当前参数预填到这里。回测按名义金额计算；
+          实盘按下单股数成交，ROI 与规模无关。
         </div>
       </div>
 

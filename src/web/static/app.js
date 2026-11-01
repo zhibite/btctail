@@ -5,6 +5,11 @@
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
+  // Segmented control: exactly one active button per group.
+  function activate(selector, clicked) {
+    $$(selector).forEach((btn) => btn.classList.toggle("active", btn === clicked));
+  }
+
   // ── formatting ────────────────────────────────────────────────────────
   const fmt = {
     money(v, showSign) {
@@ -340,7 +345,7 @@
       const q = s.quote;
       const risk = s.risk;
       const stats = s.stats;
-      const params = (st && st.params) || s.params;
+      const params = Object.assign({}, s.params || {}, (st && st.params) || {});
       const period = app.period;
       const modeBadge = app.paper
         ? '<span class="badge blue">纸面</span>'
@@ -426,7 +431,7 @@
           "</div>" +
           '<div class="hr"></div>' +
           '<div class="stats compact">' +
-            statTile(null, "交易", fmt.int(stats.trades), "笔", "") +
+            statTile(null, "交易", fmt.int(stats.trades), "已结算", "") +
             statTile(null, "胜率", fmt.pct(stats.win_rate), "", "") +
             statTile(null, "价差", stats.price_edge ? fmt.pp(stats.price_edge) : "--", "胜率−入场", fmt.cls(stats.price_edge)) +
             statTile(null, "净收益", fmt.money(stats.pnl, true), "U", fmt.cls(stats.pnl)) +
@@ -459,16 +464,14 @@
       $$("[data-mode]").forEach((btn) => {
         btn.addEventListener("click", () => {
           this.mode = btn.getAttribute("data-mode");
-          $$("[data-mode]").forEach((b) => b.classList.remove("primary"));
-          btn.classList.add("primary");
+          activate("[data-mode]", btn);
           this.load();
         });
       });
       $$("[data-period]").forEach((btn) => {
         btn.addEventListener("click", () => {
           this.period = btn.getAttribute("data-period");
-          $$("[data-period]").forEach((b) => b.classList.remove("primary"));
-          btn.classList.add("primary");
+          activate("[data-period]", btn);
           this.load();
         });
       });
@@ -548,8 +551,7 @@
       $$("[data-strategy]").forEach((btn) => {
         btn.addEventListener("click", () => {
           this.strategy = btn.getAttribute("data-strategy");
-          $$("[data-strategy]").forEach((b) => b.classList.remove("primary"));
-          btn.classList.add("primary");
+          activate("[data-strategy]", btn);
           this.load();
         });
       });
@@ -707,8 +709,7 @@
       $$("[data-rs-strategy]").forEach((btn) => {
         btn.addEventListener("click", () => {
           this.strategy = btn.getAttribute("data-rs-strategy");
-          $$("[data-rs-strategy]").forEach((b) => b.classList.remove("primary"));
-          btn.classList.add("primary");
+          activate("[data-rs-strategy]", btn);
           this.summary();
           this.prefill();
         });
@@ -752,7 +753,7 @@
         set("bt-confirm_sec", v.CONFIRM_SEC);
         set("bt-max_entry_price", v.MAX_ENTRY_PRICE);
         set("bt-min_entry_price", v.MIN_ENTRY_PRICE);
-        set("bt-stake", v.STAKE_USD);
+        set("bt-stake", cfg.stake_usd);
         set("bt-slippage", v.EXEC_SLIPPAGE);
         set("bt-fee_rate", v.TAKER_FEE_RATE);
       } catch (e) {

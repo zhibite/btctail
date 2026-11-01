@@ -143,17 +143,49 @@ async def _require_login(request: Request) -> str:
 # Rendering
 # ---------------------------------------------------------------------------
 
+_NAV_ICONS = {
+    "dashboard": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<rect x="3" y="3" width="7" height="7" rx="1.6"/>'
+        '<rect x="14" y="3" width="7" height="7" rx="1.6"/>'
+        '<rect x="3" y="14" width="7" height="7" rx="1.6"/>'
+        '<rect x="14" y="14" width="7" height="7" rx="1.6"/></svg>'
+    ),
+    "trades": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M4 6h16M4 12h16M4 18h9"/>'
+        '<circle cx="18.5" cy="18" r="2"/></svg>'
+    ),
+    "config": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M4 7h9M18 7h2M4 17h2M11 17h9"/>'
+        '<circle cx="15.5" cy="7" r="2.2"/><circle cx="8.5" cy="17" r="2.2"/></svg>'
+    ),
+    "research": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M9 3h6M10 3v6l-5 8.2A2 2 0 0 0 6.7 20h10.6a2 2 0 0 0 1.7-2.8L14 9V3"/>'
+        '<path d="M7.6 15h8.8"/></svg>'
+    ),
+}
+
+
 def _nav(active: str) -> str:
     items = [
         ("/", "总览", "dashboard"),
         ("/trades", "交易记录", "trades"),
         ("/config", "参数", "config"),
-        ("/research", "研究 / Agent", "research"),
+        ("/research", "研究", "research"),
     ]
     links = []
     for href, label, key in items:
         cls = "nav-link active" if key == active else "nav-link"
-        links.append(f'<a class="{cls}" href="{href}">{label}</a>')
+        links.append(
+            f'<a class="{cls}" href="{href}">{_NAV_ICONS[key]}<span>{label}</span></a>'
+        )
     return '<nav class="nav">' + "".join(links) + "</nav>"
 
 

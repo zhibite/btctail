@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070b10">
   <title>PolyTail · BTC 尾盘策略</title>
   <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
   <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
@@ -23,7 +24,7 @@
     <div class="page-head">
       <div>
         <h1>双策略总览</h1>
-        <p>15m：冻结参数（60s / 0.90 / 10s / 0.94） · 5m：实盘 + Agent 持续调优</p>
+        <p>15m：实盘（60s / 0.90 / 10s / 0.94） · 5m：纸面 + Agent 持续调优</p>
       </div>
       <div class="btn-row">
         <button class="btn small danger" id="stop-all">全部停止新开仓</button>
@@ -38,7 +39,7 @@
       <div class="stat"><div class="k">持仓 / 胜率</div><div class="v" id="ov-open">--</div><div class="s">胜率 <span id="ov-winrate">--</span></div></div>
     </div>
 
-    <div class="grid cols-2" id="strategy-grid" style="margin-top:16px">
+    <div class="grid strategy-grid" id="strategy-grid" style="margin-top:16px">
       <div class="card"><div class="muted small">等待状态…</div></div>
     </div>
 

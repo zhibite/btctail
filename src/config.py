@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     USE_MARKET_WS: bool = True
     POLL_INTERVAL_MS: int = 1000       # outside the entry window
     ENTRY_POLL_INTERVAL_MS: int = 250  # inside the entry window
+    # Dashboard-only polling before the collection/entry window, so the
+    # panel shows live prices for the whole window instead of "--".
+    DISPLAY_POLL_INTERVAL_MS: int = 5000
 
     # ── Risk guards ───────────────────────────────────────────────────────
     DAILY_LOSS_LIMIT_USD: float = 50.0     # 0 disables

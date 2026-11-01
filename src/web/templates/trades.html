@@ -2,7 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070b10">
   <title>交易记录 · PolyTail</title>
   <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
   <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
@@ -25,13 +26,16 @@
         <p>每笔交易都按「信号价 → 成交价 → 结算」完整记录，滑点可直接与回测假设对比</p>
       </div>
       <div class="btn-row">
-        <button class="btn small primary" data-period="">全部周期</button>
-        <button class="btn small" data-period="15m">15m</button>
-        <button class="btn small" data-period="5m">5m</button>
-        <span style="width:10px"></span>
-        <button class="btn small primary" data-mode="">全部模式</button>
-        <button class="btn small" data-mode="paper">纸面</button>
-        <button class="btn small" data-mode="live">实盘</button>
+        <div class="segmented" role="group" aria-label="周期筛选">
+          <button class="active" data-period="">全部周期</button>
+          <button data-period="15m">15m</button>
+          <button data-period="5m">5m</button>
+        </div>
+        <div class="segmented" role="group" aria-label="模式筛选">
+          <button class="active" data-mode="">全部模式</button>
+          <button data-mode="paper">纸面</button>
+          <button data-mode="live">实盘</button>
+        </div>
       </div>
     </div>
 
