@@ -22,7 +22,7 @@ from typing import Optional
 
 from src import config
 from src.config import Settings
-from src.execution.broker import build_broker
+from src.execution.broker import Broker, build_broker
 from src.execution.clob_client import ClobClient
 from src.infra.logging import configure_logging, get_logger
 from src.market.market_service import MarketService
@@ -129,6 +129,7 @@ async def run() -> int:
     strategies: dict[str, Settings] = {}
     for period, strategy in settings.strategy_settings().items():
         runtime_config.apply_overrides(strategy, db, period)
+        runtime_config.apply_mode_override(strategy, db, period)
         strategies[period] = strategy
 
     if not strategies:
@@ -140,10 +141,10 @@ async def run() -> int:
         errors = strategy.validation_errors()
         for message in errors:
             log.error("config.invalid", period=period, error=message)
-        if errors and strategy.is_live:
+        if errors:
             fatal = True
     if fatal:
-        log.error("config.abort", note="实盘策略的参数不合法，拒绝启动")
+        log.error("config.abort", note="策略参数不合法，拒绝启动")
         return 2
 
     log.info(
@@ -166,7 +167,6 @@ async def run() -> int:
     pm = PolymarketClient(gamma_api=settings.GAMMA_API, clob_host=settings.POLYMARKET_HOST)
 
     clob: Optional[ClobClient] = None
-    needs_live = any(s.is_live for s in strategies.values())
     if settings.has_credentials or settings.WALLET_PRIVATE_KEY:
         clob = ClobClient(
             host=settings.POLYMARKET_HOST,
@@ -177,10 +177,27 @@ async def run() -> int:
             signature_type=settings.SIGNATURE_TYPE,
             funder_address=settings.FUNDER_ADDRESS,
         )
-    elif needs_live:
-        log.error("boot.missing_credentials",
-                  note="有策略是 TRADING_MODE=live，但没有配置 CLOB 凭证")
-        return 2
+    clob_ready = clob is not None and clob.is_configured
+    # Live was requested but the wallet credentials are missing: fail closed
+    # into paper for that strategy instead of crash-looping the container.
+    # The dashboard shows the fallback prominently.
+    fallbacks: dict[str, str] = {}
+    for period, strategy in strategies.items():
+        if strategy.is_live and not clob_ready:
+            fallbacks[period] = "missing_credentials"
+            log.error(
+                "strategy.mode_fallback",
+                period=period, requested="live", actual="paper",
+                note="未配置 CLOB 凭证，已降级为纸面；配置后可在面板切换",
+            )
+            strategy.TRADING_MODE = "paper"
+
+    def _factory(strategy: Settings):
+        def factory(mode: str) -> Broker:
+            clone = strategy.model_copy(deep=True)
+            clone.TRADING_MODE = mode
+            return build_broker(clone, db, clob)
+        return factory
 
     runtimes: dict[str, Runtime] = {}
     try:
@@ -190,7 +207,10 @@ async def run() -> int:
             ws = MarketWS(cache) if strategy.USE_MARKET_WS else None
             service = MarketService(pm, cache,
                                     autodetect_fee=strategy.FEE_RATE_AUTODETECT)
-            runtimes[period] = Runtime(strategy, db, pm, service, broker, ws)
+            runtime = Runtime(strategy, db, pm, service, broker, ws,
+                              broker_factory=_factory(strategy))
+            runtime.mode_fallback = fallbacks.get(period, "")
+            runtimes[period] = runtime
     except Exception as exc:  # noqa: BLE001
         log.error("boot.broker_failed", error=str(exc))
         return 2

@@ -34,6 +34,15 @@ def round_down(value: float, tick: float) -> float:
 
 
 @dataclass
+class OrderAck:
+    ok: bool
+    order_id: str = ""
+    placed_size: float = 0.0
+    price: float = 0.0
+    error: str = ""
+
+
+@dataclass
 class FillResult:
     success: bool
     order_id: str = ""
@@ -304,6 +313,84 @@ class ClobClient:
             True, order_id=order_id, shares=shares, cost=cost,
             avg_price=avg_price, fee=fee, raw=resp,
         )
+
+    async def place_limit_buy(
+        self,
+        token_id: str,
+        shares: float,
+        price: float,
+        tick_size: float,
+        *,
+        neg_risk: bool = False,
+        post_only: bool = True,
+    ) -> OrderAck:
+        """Rest a GTC limit BUY for `shares` at `price`.
+
+        The CLOB enforces a 5-share minimum on resting orders, so anything
+        smaller is refused here (the caller can fall back to FAK).
+        """
+        if self._client is None:
+            return OrderAck(False, error=self._init_error or "clob not configured")
+        price_q = round_down(price, tick_size)
+        size_q = round_down(shares, tick_size)
+        if price_q <= 0 or size_q <= 0:
+            return OrderAck(False, error="invalid size/price")
+        if size_q < 5.0:
+            return OrderAck(False, error="GTD order needs at least 5 shares")
+        try:
+            from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions
+
+            args = OrderArgs(
+                token_id=token_id,
+                price=float(price_q),
+                size=float(size_q),
+                side="BUY",
+            )
+            options = PartialCreateOrderOptions(
+                tick_size=str(tick_size), neg_risk=bool(neg_risk)
+            )
+            resp = await self._run(
+                self._client.create_and_post_order,
+                args,
+                options=options,
+                order_type=OrderType.GTC,
+                post_only=bool(post_only),
+                timeout=25.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+            log.warning("clob.limit_buy_failed", token=token_id[:16],
+                        error=message, price=price_q, size=size_q)
+            return OrderAck(False, error=message)
+
+        if not isinstance(resp, dict):
+            return OrderAck(False, error=f"unexpected response: {type(resp).__name__}")
+        order_id = str(resp.get("orderID") or resp.get("order_id") or "")
+        if not order_id:
+            return OrderAck(False, error=str(
+                resp.get("errorMsg") or resp.get("error") or "no orderID"
+            ))
+        log.info("clob.limit_buy_placed", token=token_id[:16], order_id=order_id[:16],
+                 price=price_q, size=size_q, post_only=post_only,
+                 status=resp.get("status"))
+        return OrderAck(True, order_id=order_id, placed_size=size_q, price=price_q)
+
+    async def cancel_order(self, order_id: str) -> bool:
+        if self._client is None or not order_id:
+            return False
+        try:
+            from py_clob_client_v2 import OrderPayload
+
+            await self._run(
+                self._client.cancel_order, OrderPayload(orderID=order_id), timeout=15.0
+            )
+            # A non-raising cancel is success for this API shape; the batch
+            # endpoint (cancel_orders) is the one that returns a split.
+            log.info("clob.order_cancelled", order_id=order_id[:16])
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("clob.cancel_failed", order_id=order_id[:16], error=str(exc))
+            return False
 
     async def get_order(self, order_id: str) -> Optional[dict]:
         if self._client is None or not order_id:

@@ -15,6 +15,7 @@ from typing import Any
 from src.config import TUNABLE_SPECS, Settings
 
 _BOOL_TRUE = {"1", "true", "yes", "on"}
+MODE_KEY = "TRADING_MODE"   # persisted per scope; not agent-tunable
 
 
 def coerce(key: str, raw: Any) -> Any:
@@ -33,7 +34,10 @@ def coerce(key: str, raw: Any) -> Any:
     elif kind == "bool":
         value = raw if isinstance(raw, bool) else str(raw).strip().lower() in _BOOL_TRUE
     else:
-        value = str(raw)
+        value = str(raw).strip().lower()
+        options = spec.get("options")
+        if options and value not in options:
+            raise ValueError(f"{key} 必须是 {'/'.join(options)} 之一")
     low, high = spec.get("min"), spec.get("max")
     if low is not None and value < low:
         raise ValueError(f"{key}={value} 低于下限 {low}")
@@ -112,3 +116,15 @@ def payload(settings: Settings, db, scope: str) -> dict:
         "period": settings.PERIOD,
         "stake_usd": settings.STAKE_USD,
     }
+
+
+def apply_mode_override(settings: Settings, db, scope: str) -> Settings:
+    """Load the operator's paper/live choice saved from the dashboard."""
+    value = db.settings_all(scope).get(MODE_KEY)
+    if value in ("paper", "live"):
+        settings.TRADING_MODE = value
+    return settings
+
+
+def save_mode(db, scope: str, mode: str) -> None:
+    db.settings_set_many({MODE_KEY: mode}, scope=scope)

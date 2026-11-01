@@ -346,6 +346,9 @@
         ? '<span class="badge blue">纸面</span>'
         : '<span class="badge red">实盘</span>';
       let statusBadge = '<span class="badge green"><span class="dot pulse"></span>运行</span>';
+      if (app.mode_fallback) {
+        statusBadge = '<span class="badge amber">凭证缺失·纸面</span>';
+      }
       if (risk.killswitch && risk.killswitch.active) {
         statusBadge = '<span class="badge red">已停止</span>';
       } else if (risk.paused) {
@@ -407,6 +410,10 @@
             '<div class="k">阈值 / 上限 / 窗口</div><div class="v">' +
               fmt.price(params.threshold) + " / " + fmt.price(params.max_entry_price) + " / " +
               fmt.duration(params.entry_window_sec) + "</div>" +
+            '<div class="k">下单</div><div class="v">' +
+              (params.entry_shares || "--") + " 股 · " +
+              String(params.order_type || "").toUpperCase() +
+              (params.order_type === "gtd" ? " · 等 " + params.gtd_timeout_s + "s" : "") + "</div>" +
             '<div class="k">本次窗口峰值</div><div class="v">UP ' +
               fmt.price(st && st.peak_up) + " · DOWN " + fmt.price(st && st.peak_down) + "</div>" +
             '<div class="k">放弃原因</div><div class="v">' +
@@ -549,6 +556,7 @@
       await this.load();
       $("#cfg-form").addEventListener("submit", (e) => { e.preventDefault(); this.save(); });
       $("#cfg-reset").addEventListener("click", () => this.reset());
+      $("#mode-apply").addEventListener("click", () => this.applyMode());
       $("#kill-btn").addEventListener("click", () => this.control("killswitch"));
       $("#release-btn").addEventListener("click", () => this.control("release"));
       $("#pause-btn").addEventListener("click", () => this.pause());
@@ -565,8 +573,19 @@
         if (!target) return;
         const value = payload.values[key];
         const step = spec.step || (spec.type === "int" ? 1 : 0.01);
-        const input = "<input type='number' name='" + key + "' value='" + value +
-          "' min='" + spec.min + "' max='" + spec.max + "' step='" + step + "'>";
+        let input;
+        if (spec.type === "bool") {
+          input = "<select name='" + key + "'><option value='true'" + (value ? " selected" : "") +
+            ">开启</option><option value='false'" + (value ? "" : " selected") + ">关闭</option></select>";
+        } else if (spec.type === "str") {
+          const options = spec.options || [];
+          input = "<select name='" + key + "'>" + options.map((opt) =>
+            "<option value='" + fmt.esc(opt) + "'" + (String(value) === opt ? " selected" : "") +
+            ">" + fmt.esc(opt) + "</option>").join("") + "</select>";
+        } else {
+          input = "<input type='number' name='" + key + "' value='" + value +
+            "' min='" + spec.min + "' max='" + spec.max + "' step='" + step + "'>";
+        }
         const overridden = payload.overrides[key] !== undefined;
         target.insertAdjacentHTML("beforeend",
           "<label class='field'><span class='label'>" + fmt.esc(spec.label) +
@@ -583,6 +602,8 @@
       setText("#cfg-mode", payload.mode);
       setText("#cfg-asset", payload.asset + " · " + payload.period);
       setText("#cfg-scope", this.strategy);
+      const modeSelect = $("#cfg-trading-mode");
+      if (modeSelect) modeSelect.value = payload.mode;
     },
     async save() {
       const form = $("#cfg-form");
@@ -604,6 +625,22 @@
       await api("/api/config/reset?strategy=" + this.strategy, { method: "POST" });
       toast("已恢复默认", "ok");
       await this.load();
+    },
+    async applyMode() {
+      const mode = $("#cfg-trading-mode").value;
+      const label = mode === "live" ? "实盘（真实资金）" : "纸面（模拟）";
+      if (!confirm("把 " + this.strategy + " 切换为 " + label + "？")) return;
+      try {
+        await api("/api/control/mode", {
+          method: "POST",
+          body: JSON.stringify({ strategy: this.strategy, mode }),
+        });
+        toast(this.strategy + " 已切换为 " + label, "ok");
+        await this.load();
+        this.statusLoop();
+      } catch (err) {
+        toast("切换失败: " + err.message, "error");
+      }
     },
     async control(action) {
       let reason = "";
@@ -641,6 +678,11 @@
         const el = $("#ctrl-state");
         if (!card) { el.className = "alert warn"; el.textContent = "策略未运行"; return; }
         const risk = card.risk;
+        if (card.app.mode_fallback) {
+          el.className = "alert warn";
+          el.textContent = this.strategy + " 实盘凭证缺失，已降级为纸面。配置 API_KEY/WALLET_PRIVATE_KEY 后可在上方切换。";
+          return;
+        }
         if (risk.killswitch && risk.killswitch.active) {
           el.className = "alert error";
           el.textContent = this.strategy + " 已停止新开仓。" + (risk.killswitch.reason ? " 原因：" + risk.killswitch.reason : "");
@@ -855,6 +897,15 @@
   function initLogin() {
     const form = $("#login-form");
     if (!form) return;
+    api("/api/auth/me").then((me) => {
+      if (!me.password_configured) {
+        const warning = $("#login-config-warning");
+        if (warning) {
+          warning.className = "alert warn";
+          warning.textContent = "未配置 WEB_PASSWORD：所有页面都需要登录，因此当前无法进入面板。请在环境变量中设置 WEB_PASSWORD 后重启。";
+        }
+      }
+    }).catch(() => {});
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const err = $("#login-error");

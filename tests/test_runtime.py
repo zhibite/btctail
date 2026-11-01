@@ -1,10 +1,12 @@
 """Runtime path: quote -> signal -> broker -> trade row -> settlement."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.config import Settings
-from src.execution.broker import Broker, EntryFill
+from src.execution.broker import Broker, EntryFill, LimitFill, LimitOrder
 from src.market.market_service import Quote
 from src.market.models import MarketInfo, Side
 from src.persistence.db import DB
@@ -63,6 +65,21 @@ class FakeBroker(Broker):
     async def balance(self):
         return 1000.0
 
+    async def place_limit_buy(self, market, side, shares, price):
+        return LimitOrder(order_id="fake-limit", token_id="t", side=side,
+                          price=price, shares=shares, maker=True, mode=self.mode)
+
+    async def limit_fill(self, order, quote=None):
+        if quote is None:
+            return LimitFill()
+        ask = quote.ask(order.side)
+        if ask is not None and ask <= order.price + 1e-9:
+            return LimitFill(filled=order.shares, avg_price=order.price, done=True)
+        return LimitFill()
+
+    async def cancel(self, order):
+        return True
+
     async def buy(self, market, side, signal_price, stake, limit_price, quote=None):
         self.calls.append({
             "side": side, "signal_price": signal_price,
@@ -86,10 +103,11 @@ def make_market() -> MarketInfo:
     )
 
 
-def quote(ts: float, up: float) -> Quote:
+def quote(ts: float, up: float, ask: float | None = None) -> Quote:
+    up_ask = round(up + 0.01, 4) if ask is None else ask
     return Quote(
         ts=ts, up_mid=up, down_mid=round(1 - up, 4),
-        up_bid=round(up - 0.01, 4), up_ask=round(up + 0.01, 4),
+        up_bid=round(up - 0.01, 4), up_ask=up_ask,
         down_bid=round(1 - up - 0.01, 4), down_ask=round(1 - up + 0.01, 4),
     )
 
@@ -232,3 +250,87 @@ async def test_voided_market_settles_as_void(tmp_path):
     assert settled["resolved_side"] == "VOID"
     assert settled["pnl"] == pytest.approx(-trade["fee"])
     assert settled["payout"] == pytest.approx(trade["cost"])
+
+
+async def test_gtd_fills_at_the_signal_price_as_maker(tmp_path):
+    settings = Settings(
+        DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
+        MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
+        ENTRY_ORDER_TYPE="gtd", ENTRY_SHARES=5, GTD_FILL_TIMEOUT_S=0.5,
+        MAKER_FEE_RATE=0.0,
+    )
+    # ask == mid at the poll -> the resting buy gets filled by a seller.
+    fill_quote = quote(END - 40, 0.93, ask=0.93)
+    runtime, db, aw, svc, pm = build(
+        tmp_path,
+        [quote(END - 50, 0.92), quote(END - 40, 0.93), quote(END - 40, 0.93), fill_quote],
+        settings=settings,
+    )
+    set_clock(runtime, END - 50)
+    await runtime._maybe_refresh_quote(aw, END - 50)
+    set_clock(runtime, END - 40)
+    await runtime._maybe_refresh_quote(aw, END - 40)
+
+    trade = db.recent_trades()[0]
+    assert trade["shares"] == pytest.approx(5.0)
+    assert trade["entry_price"] == pytest.approx(0.93)
+    assert trade["fee"] == pytest.approx(0.0)   # maker fee is zero
+    extra = json.loads(trade["extra"])
+    assert extra["order_type"] == "gtd"
+    assert extra["maker"] is True
+    assert extra["source"] == "gtd"
+
+
+async def test_gtd_unfilled_falls_back_to_fak(tmp_path):
+    settings = Settings(
+        DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
+        MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
+        ENTRY_ORDER_TYPE="gtd", ENTRY_SHARES=5, GTD_FILL_TIMEOUT_S=0.5,
+        ENTRY_FALLBACK_FAK=True,
+    )
+    # ask never touches the resting price, so the GTD cannot fill.
+    runtime, db, aw, svc, pm = build(
+        tmp_path,
+        [quote(END - 50, 0.92), quote(END - 40, 0.93), quote(END - 40, 0.93)],
+        settings=settings,
+    )
+    set_clock(runtime, END - 50)
+    await runtime._maybe_refresh_quote(aw, END - 50)
+    set_clock(runtime, END - 40)
+    await runtime._maybe_refresh_quote(aw, END - 40)
+
+    trade = db.recent_trades()[0]
+    extra = json.loads(trade["extra"])
+    assert extra["order_type"] == "gtd"
+    assert extra["fallback"] == "fak"
+    assert trade["shares"] > 0
+
+
+async def test_set_mode_refused_with_open_position(tmp_path):
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 50, 0.92), quote(END - 40, 0.93), quote(END - 40, 0.93)]
+    )
+    set_clock(runtime, END - 50)
+    await runtime._maybe_refresh_quote(aw, END - 50)
+    set_clock(runtime, END - 40)
+    await runtime._maybe_refresh_quote(aw, END - 40)
+    assert db.recent_trades()[0]["status"] == "open"
+    ok, message = runtime.set_mode("live")
+    assert ok is False
+    assert "未结算" in message
+
+
+async def test_set_mode_switches_broker_and_risk(tmp_path):
+    runtime, db, aw, svc, pm = build(tmp_path, [quote(END - 50, 0.92)])
+
+    def factory(mode):
+        broker = FakeBroker()
+        broker.mode = mode
+        return broker
+
+    runtime._broker_factory = factory
+    ok, message = runtime.set_mode("live")
+    assert ok, message
+    assert runtime.broker.mode == "live"
+    assert runtime.risk.mode == "live"
+    assert runtime.settings.TRADING_MODE == "live"

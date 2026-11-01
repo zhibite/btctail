@@ -23,6 +23,25 @@ log = get_logger(__name__)
 
 
 @dataclass
+class LimitOrder:
+    order_id: str
+    token_id: str
+    side: Side
+    price: float
+    shares: float
+    maker: bool = True
+    mode: str = "paper"
+
+
+@dataclass
+class LimitFill:
+    filled: float = 0.0
+    avg_price: float = 0.0
+    done: bool = False
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
 class EntryFill:
     ok: bool
     shares: float = 0.0
@@ -49,6 +68,19 @@ class Broker:
         quote: Optional[Quote] = None,
     ) -> EntryFill:  # pragma: no cover - interface
         raise NotImplementedError
+
+    async def place_limit_buy(
+        self, market: MarketInfo, side: Side, shares: float, price: float
+    ) -> Optional[LimitOrder]:  # pragma: no cover - interface
+        return None
+
+    async def limit_fill(
+        self, order: LimitOrder, quote: Optional[Quote] = None
+    ) -> LimitFill:  # pragma: no cover - interface
+        return LimitFill(done=True)
+
+    async def cancel(self, order: LimitOrder) -> bool:  # pragma: no cover
+        return True
 
     async def balance(self) -> Optional[float]:  # pragma: no cover
         return None
@@ -88,6 +120,30 @@ class PaperBroker(Broker):
         committed = sum(float(t.get("cost") or 0) + float(t.get("fee") or 0)
                         for t in open_trades)
         return float(self._settings.PAPER_START_BALANCE) + realized - committed
+
+    async def place_limit_buy(
+        self, market: MarketInfo, side: Side, shares: float, price: float
+    ) -> Optional[LimitOrder]:
+        return LimitOrder(
+            order_id=f"paper-limit-{int(time.time() * 1000)}",
+            token_id=market.token_for(side), side=side, price=price,
+            shares=shares, maker=True, mode="paper",
+        )
+
+    async def limit_fill(
+        self, order: LimitOrder, quote: Optional[Quote] = None
+    ) -> LimitFill:
+        # A resting buy fills when a seller crosses into it: the ask has to
+        # come down to our limit.
+        if quote is None:
+            return LimitFill()
+        ask = quote.ask(order.side)
+        if ask is not None and ask <= order.price + 1e-9:
+            return LimitFill(filled=order.shares, avg_price=order.price, done=True)
+        return LimitFill()
+
+    async def cancel(self, order: LimitOrder) -> bool:
+        return True
 
     async def buy(
         self,
@@ -147,6 +203,46 @@ class LiveBroker(Broker):
 
     async def balance(self) -> Optional[float]:
         return await self._clob.get_balance()
+
+    async def place_limit_buy(
+        self, market: MarketInfo, side: Side, shares: float, price: float
+    ) -> Optional[LimitOrder]:
+        ack = await self._clob.place_limit_buy(
+            market.token_for(side), shares, price, market.tick_size,
+            neg_risk=market.neg_risk, post_only=bool(self._settings.GTD_POST_ONLY),
+        )
+        if not ack.ok:
+            log.warning("broker.limit_rejected", side=side.value,
+                        price=price, shares=shares, error=ack.error)
+            return None
+        return LimitOrder(
+            order_id=ack.order_id, token_id=market.token_for(side), side=side,
+            price=ack.price or price, shares=ack.placed_size or shares,
+            maker=bool(self._settings.GTD_POST_ONLY), mode="live",
+        )
+
+    async def limit_fill(
+        self, order: LimitOrder, quote: Optional[Quote] = None
+    ) -> LimitFill:
+        state = await self._clob.get_order(order.order_id)
+        if not isinstance(state, dict):
+            return LimitFill()
+        try:
+            matched = float(state.get("size_matched") or 0.0)
+        except (TypeError, ValueError):
+            matched = 0.0
+        status = str(state.get("status") or "").lower()
+        done = status in ("matched", "filled", "canceled", "cancelled", "expired")             or matched >= order.shares - 1e-9
+        # Maker fills execute at the limit or better; the limit is the
+        # conservative (higher) cost.
+        return LimitFill(
+            filled=min(matched, order.shares),
+            avg_price=order.price if matched > 0 else 0.0,
+            done=done, raw=state,
+        )
+
+    async def cancel(self, order: LimitOrder) -> bool:
+        return await self._clob.cancel_order(order.order_id)
 
     async def buy(
         self,

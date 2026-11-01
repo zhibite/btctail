@@ -24,7 +24,7 @@
     <div class="page-head">
       <div>
         <h1>参数与风控 <span class="badge blue" id="cfg-scope">15m</span></h1>
-        <p>每个策略独立配置；保存后写入数据库，<b>下一个窗口</b>生效。15m 建议保持冻结，5m 由 Agent 调优。</p>
+        <p>每个策略独立配置；保存后写入数据库，<b>下一个窗口</b>生效。15m 默认文档推荐参数，5m 默认纸面并由 Agent 调优。</p>
       </div>
       <div class="btn-row strategy-tabs">
         <button class="btn small primary" data-strategy="15m">15m</button>
@@ -35,6 +35,18 @@
     </div>
 
     <div id="cfg-errors" class="hidden"></div>
+
+    <div class="card tight" style="margin-bottom:16px">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span class="card-title plain">交易模式</span>
+        <select id="cfg-trading-mode" style="max-width:200px">
+          <option value="paper">纸面（模拟成交）</option>
+          <option value="live">实盘（真实资金）</option>
+        </select>
+        <button class="btn small" id="mode-apply">切换</button>
+        <span class="small muted" id="mode-note">切换在下一个窗口生效；有未结算持仓时会被拒绝。</span>
+      </div>
+    </div>
 
     <form id="cfg-form">
       <div class="grid cols-3">
@@ -53,7 +65,7 @@
       </div>
       <div class="form-actions">
         <button type="submit" class="btn primary">保存参数</button>
-        <span class="small muted">先用「研究 / Agent」页验证再改；15m 参数不建议频繁调整。</span>
+        <span class="small muted">15m 的推荐参数可改，但改前请先用「研究 / Agent」页验证；5m 适合持续调优。</span>
       </div>
     </form>
 
@@ -92,11 +104,13 @@
       <div class="card-head"><div class="card-title">关于这些参数</div></div>
       <div class="md">
         <ul>
-          <li><b>入场窗口</b>：15m 用 60 秒；5m 只有 300 秒，默认只看最后 30 秒（文档中 5m 唯一稳定盈利的口袋是最后 10–20 秒）。</li>
+          <li><b>入场窗口</b>：15m 用 60 秒；5m 只有 300 秒，默认只看最后 30 秒（文档中 5m 最强的只是最后 10–20 秒的时间子集）。</li>
           <li><b>触发阈值</b>：0.90。提高会减少交易、抬高胜率，也会抬高入场价。</li>
           <li><b>确认秒数</b>：15m 用 10 秒过滤假突破；5m 默认 0，因为窗口太短，等待会错过结算前的最佳价格。</li>
           <li><b>入场价上限</b>：15m 用 0.94（0.94–0.95 档价差偏弱）；5m 用 0.92（文档的最佳简单版本）。</li>
-          <li><b>执行滑点</b>：FAK 限价 = 信号价 + 该值。若盘口卖价高于限价，程序会直接放弃而不是发一张必然不成交的单。</li>
+          <li><b>下单方式</b>：默认 <b>GTD</b>——在信号价挂限价买单（maker，费率 0），等待成交；
+            未成交则按配置回退 FAK 吃单。<b>下单股数</b>默认 5 股（GTD 的最小挂单量），约 4.6–4.7 USDC。</li>
+          <li><b>执行滑点</b>：FAK 限价 = 信号价 + 该值。若盘口卖价高于限价，FAK 会直接放弃而不是发一张必然不成交的单。</li>
           <li><b>官方费率</b>：fee = 份额 × 费率 × p × (1−p)，默认 0.07。</li>
         </ul>
       </div>

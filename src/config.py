@@ -64,8 +64,9 @@ class Settings(BaseSettings):
     ROUND_PERIOD_S: int = 900
 
     # paper = simulate fills, record everything, never touch the wallet
-    # live  = real FAK taker orders on Polymarket
-    TRADING_MODE: str = "paper"
+    # live  = real orders on Polymarket (GTD maker first, FAK fallback)
+    # These are the defaults; the dashboard can switch per strategy at runtime.
+    TRADING_MODE: str = "live"
 
     # ── Strategy (the parameters from docs/late_window_strategy_summary.md) ──
     # The generic names configure the **15m** strategy (the documented,
@@ -76,16 +77,25 @@ class Settings(BaseSettings):
     CONFIRM_SEC: float = 10.0          # wait, then require it is still >= threshold
     MAX_ENTRY_PRICE: float = 0.94      # skip if the confirmed price is >= this
     MIN_ENTRY_PRICE: float = 0.0       # 0 disables
-    STAKE_USD: float = 10.0
+    STAKE_USD: float = 10.0          # legacy: backtest notional only
+    ENTRY_SHARES: int = 5            # live sizing: shares per entry
+    # "gtd": rest a maker limit at the signal price, then optionally fall
+    # back to FAK if it has not filled. "fak": send a taker order directly.
+    ENTRY_ORDER_TYPE: str = "gtd"
+    GTD_FILL_TIMEOUT_S: float = 3.0
+    GTD_POST_ONLY: bool = True
+    ENTRY_FALLBACK_FAK: bool = True
+    MAKER_FEE_RATE: float = 0.0      # crypto maker fee is 0
     REARM_AFTER_FAILED_CONFIRM: bool = False
     MAX_ENTRIES_PER_WINDOW: int = 1
 
     # ── Strategies to run (one process, one loop per strategy) ────────────
     ENABLED_15M: bool = True
     ENABLED_5M: bool = True
-    # Empty = inherit TRADING_MODE. Lets 15m go live while 5m stays paper
-    # until the agent has found something, or vice versa.
-    TRADING_MODE_5M: str = ""
+    # Per-strategy mode. Empty = inherit TRADING_MODE. Defaults follow the
+    # operator's decision: 15m live, 5m paper until the agent has found
+    # something worth trading.
+    TRADING_MODE_5M: str = "paper"
 
     # 5m defaults follow the doc's best simple 5m configuration:
     # last 30s / 0.90 / no confirmation / 0.92 cap (BTC +1.04% ROI, t=1.35,
@@ -99,6 +109,7 @@ class Settings(BaseSettings):
     MAX_ENTRY_PRICE_5M: float = 0.92
     MIN_ENTRY_PRICE_5M: float = 0.0
     STAKE_USD_5M: float = 5.0
+    ENTRY_SHARES_5M: int = 5
     REARM_AFTER_FAILED_CONFIRM_5M: bool = False
 
     # ── Execution ─────────────────────────────────────────────────────────
@@ -256,6 +267,7 @@ class Settings(BaseSettings):
             clone.MAX_ENTRY_PRICE = float(self.MAX_ENTRY_PRICE_5M)
             clone.MIN_ENTRY_PRICE = float(self.MIN_ENTRY_PRICE_5M)
             clone.STAKE_USD = float(self.STAKE_USD_5M)
+            clone.ENTRY_SHARES = int(self.ENTRY_SHARES_5M)
             clone.REARM_AFTER_FAILED_CONFIRM = bool(self.REARM_AFTER_FAILED_CONFIRM_5M)
             clone.TRADING_MODE = (self.TRADING_MODE_5M or self.TRADING_MODE).strip().lower()
         return clone
@@ -306,8 +318,16 @@ class Settings(BaseSettings):
             errors.append("TAKER_FEE_RATE 必须在 [0, 0.5] 内")
         if self.TRADING_MODE not in ("paper", "live"):
             errors.append("TRADING_MODE 必须是 paper 或 live")
-        if self.is_live and not (self.has_credentials or self.WALLET_PRIVATE_KEY):
-            errors.append("实盘模式需要 API_KEY/API_SECRET/API_PASSPHRASE 或 WALLET_PRIVATE_KEY")
+        if self.ENTRY_ORDER_TYPE not in ("gtd", "fak"):
+            errors.append("ENTRY_ORDER_TYPE 必须是 gtd 或 fak")
+        if int(self.ENTRY_SHARES) <= 0:
+            errors.append("ENTRY_SHARES 必须 > 0")
+        if self.ENTRY_ORDER_TYPE == "gtd" and int(self.ENTRY_SHARES) < 5:
+            errors.append("GTD 挂单最少 5 股；请把下单股数设为 >= 5 或改用 fak")
+        if self.GTD_FILL_TIMEOUT_S <= 0:
+            errors.append("GTD_FILL_TIMEOUT_S 必须 > 0")
+        if self.MAKER_FEE_RATE < 0 or self.MAKER_FEE_RATE > 0.5:
+            errors.append("MAKER_FEE_RATE 必须在 [0, 0.5] 内")
         return errors
 
 
@@ -329,12 +349,27 @@ TUNABLE_SPECS: dict[str, dict] = {
     "MIN_ENTRY_PRICE": {"group": "strategy", "type": "float", "min": 0.0, "max": 0.95, "step": 0.01,
                         "label": "入场价下限",
                         "help": "0 表示不启用。"},
-    "STAKE_USD": {"group": "strategy", "type": "float", "min": 1, "max": 1000, "step": 1,
-                  "label": "单笔金额(USDC)",
-                  "help": "回测按 10U/笔。实盘会自动受钱包余额约束。"},
+    "ENTRY_SHARES": {"group": "strategy", "type": "int", "min": 1, "max": 100000, "step": 1,
+                     "label": "下单股数(shares)",
+                     "help": "GTD 与 FAK 都按股数下单。5 股在 0.92 时约 4.6 USDC。"},
     "EXEC_SLIPPAGE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.05, "step": 0.001,
                       "label": "执行滑点上限",
-                      "help": "FAK 限价 = 信号价 + 该值。回测敏感性 0.005 / 0.01。"},
+                      "help": "GTD/FAK 限价 = 信号价 + 该值。回测敏感性 0.005 / 0.01。"},
+    "ENTRY_ORDER_TYPE": {"group": "execution", "type": "str", "options": ["gtd", "fak"],
+                         "label": "下单方式",
+                         "help": "gtd = 先挂限价卖单（maker，费率 0）；fak = 直接吃单。"},
+    "GTD_FILL_TIMEOUT_S": {"group": "execution", "type": "float", "min": 0.5, "max": 30, "step": 0.5,
+                           "label": "GTD 等待成交(秒)",
+                           "help": "挂单后最多等这么久；仍未成交则按需回退 FAK 或放弃。"},
+    "GTD_POST_ONLY": {"group": "execution", "type": "bool",
+                      "label": "GTD 只做 maker",
+                      "help": "开启后限价单不会主动吃单；若会成交则被拒绝并回退。"},
+    "ENTRY_FALLBACK_FAK": {"group": "execution", "type": "bool",
+                           "label": "GTD 未成交时回退 FAK",
+                           "help": "关闭则 GTD 没成交就放弃本窗口。"},
+    "MAKER_FEE_RATE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.2, "step": 0.001,
+                       "label": "Maker 费率",
+                       "help": "Crypto 类目 maker 费率通常为 0。"},
     "MAX_SPREAD_AT_ENTRY": {"group": "execution", "type": "float", "min": 0.0, "max": 0.3, "step": 0.005,
                             "label": "最大买卖价差",
                             "help": "入场时 (ask-bid) 超过该值则放弃。0=关闭。"},

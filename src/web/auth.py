@@ -38,7 +38,12 @@ def credentials_configured(settings: Settings) -> bool:
 
 
 def auth_required(settings: Settings) -> bool:
-    return credentials_configured(settings)
+    """Every dashboard surface requires a session.
+
+    With WEB_PASSWORD unset nobody can log in, which deliberately closes the
+    dashboard rather than exposing positions or the config surface.
+    """
+    return True
 
 
 def verify_credentials(settings: Settings, username: str, password: str) -> bool:

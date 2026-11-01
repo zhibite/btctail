@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from src.config import Settings
-from src.execution.broker import Broker, EntryFill, resolve_fee_rate
+from src.execution.broker import Broker, EntryFill, LimitFill, LimitOrder, resolve_fee_rate
+from src.execution.clob_client import round_down
 from src.infra.clock import fmt_duration, slot_start, utc_iso
 from src.infra.logging import get_logger, set_event_hook
 from src.market.market_service import MarketService, Quote
@@ -81,6 +82,7 @@ class Runtime:
         market_svc: MarketService,
         broker: Broker,
         ws: Optional[MarketWS] = None,
+        broker_factory: Optional[Callable[[str], Broker]] = None,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -88,6 +90,11 @@ class Runtime:
         self.market_svc = market_svc
         self.broker = broker
         self.ws = ws
+        # Builds a broker for a new mode at runtime (None = switching disabled).
+        self._broker_factory = broker_factory
+        # Set when live was requested but credentials were missing at boot.
+        self.mode_fallback = ""
+        self.mode_note = ""
         self.risk = RiskManager(db, settings, period=settings.PERIOD, mode=broker.mode)
         self.collector: Optional[LiveCollector] = (
             LiveCollector(settings.collect_dir, settings.ASSET, settings.PERIOD)
@@ -440,21 +447,9 @@ class Runtime:
             return
 
         limit = settings.entry_limit_for(decision.price)
-        # A FAK whose limit is below the ask cannot match, and the bot would
-        # burn the window on a rejection. Refuse up front and record how far
-        # the ask was above the allowed entry so EXEC_SLIPPAGE can be tuned
-        # from real data.
+        shares = max(1, int(settings.ENTRY_SHARES))
+        notional = round(shares * limit, 2)
         ask = fresh.ask(decision.side)
-        if ask is not None and ask > limit + 1e-9:
-            self._record_signal(aw, decision="skip", skip_reason="ask_above_limit",
-                                decision_obj=decision, confirm_price=current,
-                                extra={"ask": ask, "limit": limit})
-            log.warning("exec.aborted_ask_above_limit", slot=aw.slot,
-                        side=decision.side.value, signal=decision.price,
-                        ask=ask, limit=limit,
-                        ask_premium=round(ask - decision.price, 4))
-            aw.signal_recorded = True
-            return
 
         # Prefer a recent cached balance: a slow balance call must not delay
         # the order while the window is closing.
@@ -467,7 +462,7 @@ class Runtime:
                 balance = self._last_balance
             self._last_balance = balance
             self._last_balance_ts = self._now()
-        risk = self.risk.evaluate(now, settings.STAKE_USD, balance, mode)
+        risk = self.risk.evaluate(now, notional, balance, mode)
         if not risk.allowed:
             self._record_signal(aw, decision="skip", skip_reason=f"risk:{risk.reason}",
                                 decision_obj=decision, confirm_price=current,
@@ -487,22 +482,110 @@ class Runtime:
             aw.signal_recorded = True
             return
 
+        use_gtd = settings.ENTRY_ORDER_TYPE == "gtd" and shares >= 5
+        if settings.ENTRY_ORDER_TYPE == "gtd" and not use_gtd:
+            log.warning("exec.gtd_below_min", slot=aw.slot, shares=shares,
+                        note="GTD 挂单最少 5 股，本次改用 FAK")
+
         log.info(
             "exec.sending", slot=aw.slot, side=decision.side.value,
             signal_price=round(decision.price, 4),
             exec_price=round(current, 4), limit=limit,
-            stake=settings.STAKE_USD, spread=spread, depth=depth,
-            mode=mode,
+            shares=shares, notional=notional, ask=ask,
+            order_type="gtd" if use_gtd else "fak",
+            spread=spread, depth=depth, mode=mode,
         )
 
-        fill = await self.broker.buy(
-            market=market,
-            side=decision.side,
-            signal_price=decision.price,
-            stake=settings.STAKE_USD,
-            limit_price=limit,
-            quote=fresh,
-        )
+        entry_info: dict = {"order_type": "gtd" if use_gtd else "fak"}
+        fill: Optional[EntryFill] = None
+
+        if use_gtd:
+            # Rest at the confirmed mid, not at the slippage limit: a buy at
+            # the ask would cross and pay taker fees. The FAK fallback uses
+            # the full signal+slippage limit.
+            rest_price = round_down(decision.price, market.tick_size)
+            order = await self.broker.place_limit_buy(
+                market, decision.side, shares, rest_price
+            )
+            if order is None:
+                entry_info["fallback"] = "place_failed"
+                if settings.ENTRY_FALLBACK_FAK and aw.end_ts - self._now() > 3.0:
+                    fill = await self._entry_fak(market, decision, fresh, limit, shares)
+                else:
+                    self._record_signal(aw, decision="skip", skip_reason="gtd_place_failed",
+                                        decision_obj=decision, confirm_price=current,
+                                        extra={"limit": limit, "ask": ask})
+                    aw.signal_recorded = True
+                    return
+            else:
+                state = await self._wait_limit_fill(order, aw, market)
+                entry_info.update({
+                    "gtd_price": order.price,
+                    "gtd_filled": round(state.filled, 4),
+                    "maker": order.maker,
+                    "gtd_order_id": order.order_id,
+                })
+                if state.filled > 0:
+                    # Cancel whatever is still resting; we only keep the fill.
+                    cancelled = await self.broker.cancel(order)
+                    if not cancelled and state.filled < order.shares - 1e-9:
+                        # A live remainder could fill after this point and
+                        # never be recorded. Stop the strategy and let a
+                        # human check the book.
+                        log.error("exec.gtd_remainder_cancel_failed",
+                                  order_id=order.order_id[:16],
+                                  filled=round(state.filled, 4),
+                                  shares=order.shares)
+                        self.risk.engage_killswitch(
+                            f"{self.settings.PERIOD} GTD 部分成交后剩余挂单取消失败，请人工核对"
+                        )
+                    filled = min(state.filled, order.shares)
+                    price = state.avg_price or order.price
+                    rate = (settings.MAKER_FEE_RATE if order.maker
+                            else resolve_fee_rate(settings, market))
+                    fill = EntryFill(
+                        True, shares=filled, cost=filled * price, avg_price=price,
+                        fee=taker_fee(filled, price, rate), fee_rate=rate,
+                        order_id=order.order_id,
+                        partial=filled < order.shares - 1e-9,
+                        extra={"source": "gtd", "maker": order.maker},
+                    )
+                else:
+                    cancelled = await self.broker.cancel(order)
+                    if not cancelled:
+                        # Sending a FAK while the GTD may still be live could
+                        # double the position.
+                        log.error("exec.gtd_cancel_failed_before_fallback",
+                                  order_id=order.order_id[:16])
+                        self._record_signal(aw, decision="skip",
+                                            skip_reason="gtd_cancel_failed",
+                                            decision_obj=decision, confirm_price=current,
+                                            extra={"gtd_price": order.price, **entry_info})
+                        aw.signal_recorded = True
+                        self.risk.set_pause(60, "gtd_cancel_failed")
+                        return
+                    remaining = aw.end_ts - self._now()
+                    if settings.ENTRY_FALLBACK_FAK and remaining > 3.0:
+                        entry_info["fallback"] = "fak"
+                        fill = await self._entry_fak(market, decision, fresh, limit, shares)
+                    else:
+                        self._record_signal(aw, decision="skip", skip_reason="gtd_unfilled",
+                                            decision_obj=decision, confirm_price=current,
+                                            extra={"limit": limit, "ask": ask,
+                                                   "gtd_price": order.price})
+                        log.info("exec.gtd_unfilled", slot=aw.slot,
+                                 price=order.price, shares=shares,
+                                 remaining=round(remaining, 1))
+                        aw.signal_recorded = True
+                        return
+        else:
+            fill = await self._entry_fak(market, decision, fresh, limit, shares)
+
+        if fill is None:
+            self._record_signal(aw, decision="skip", skip_reason="execution_missing",
+                                decision_obj=decision, confirm_price=current)
+            aw.signal_recorded = True
+            return
 
         if not fill.ok:
             # A POST can time out *after* the exchange accepted it, so "error"
@@ -510,11 +593,21 @@ class Runtime:
             # pretending nothing happened.
             recovered = await self._reconcile_unknown_fill(aw, decision, limit)
             if recovered is None:
+                if fill.error == "ask_above_limit":
+                    # Normal for the FAK leg: the book moved away. Not an
+                    # execution failure, so no pause.
+                    self._record_signal(aw, decision="skip",
+                                        skip_reason="ask_above_limit",
+                                        decision_obj=decision, confirm_price=current,
+                                        extra={"limit": limit, "ask": ask,
+                                               **entry_info})
+                    aw.signal_recorded = True
+                    return
                 self._record_signal(aw, decision="skip",
                                     skip_reason=f"execution_failed:{fill.error}",
                                     decision_obj=decision, confirm_price=current,
                                     extra={"limit": limit, "spread": spread,
-                                           "depth": depth})
+                                           "depth": depth, "ask": ask, **entry_info})
                 log.error("exec.failed", slot=aw.slot, error=fill.error,
                           side=decision.side.value, limit=limit)
                 aw.signal_recorded = True
@@ -552,6 +645,7 @@ class Runtime:
             "book_asks": book_at_entry,
             "balance_before": balance,
             "partial": fill.partial,
+            **entry_info,
             **fill.extra,
         }
         trade_id = self.db.create_trade(
@@ -590,6 +684,54 @@ class Runtime:
             order_id=fill.order_id[:16],
         )
 
+    async def _entry_fak(self, market: MarketInfo, decision: EntryDecision,
+                         quote: Quote, limit: float, shares: int) -> EntryFill:
+        """Taker entry sized in shares, crossing no higher than `limit`."""
+        ask = quote.ask(decision.side)
+        if ask is not None and ask > limit + 1e-9:
+            return EntryFill(False, error="ask_above_limit")
+        notional = round(shares * limit, 2)
+        return await self.broker.buy(
+            market=market, side=decision.side, signal_price=decision.price,
+            stake=notional, limit_price=limit, quote=quote,
+        )
+
+    async def _wait_limit_fill(self, order, aw: ActiveWindow,
+                               market: MarketInfo) -> "LimitFill":
+        """Poll a resting order until filled or the wait budget expires.
+
+        This blocks the strategy's own loop for at most GTD_FILL_TIMEOUT_S.
+        That is acceptable: the strategy is already in ENTERED for this
+        window, and each strategy has its own loop.
+        """
+        import time as _time
+
+        settings = self.settings
+        budget = min(float(settings.GTD_FILL_TIMEOUT_S),
+                     max(0.5, aw.end_ts - self._now() - 2.0))
+        deadline = _time.monotonic() + budget
+        state = LimitFill()
+        while True:
+            quote = None
+            if self.broker.mode == "paper":
+                try:
+                    quote = await asyncio.wait_for(
+                        self.market_svc.fetch_quote(market), timeout=2.0
+                    )
+                except Exception:  # noqa: BLE001
+                    quote = None
+            try:
+                state = await self.broker.limit_fill(order, quote)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("exec.limit_poll_failed", error=str(exc),
+                            order_id=getattr(order, "order_id", "")[:16])
+                state = LimitFill()
+            if state.filled >= order.shares - 1e-9 or state.done:
+                return state
+            if _time.monotonic() >= deadline:
+                return state
+            await asyncio.sleep(0.4)
+
     async def _reconcile_unknown_fill(
         self, aw: ActiveWindow, decision: EntryDecision, limit: float
     ) -> Optional[EntryFill]:
@@ -615,6 +757,36 @@ class Runtime:
             order_id="reconciled", extra={"source": "balance_reconcile"},
         )
 
+    def set_mode(self, mode: str) -> tuple[bool, str]:
+        """Switch this strategy between paper and live at runtime."""
+        mode = (mode or "").strip().lower()
+        if mode not in ("paper", "live"):
+            return False, "模式必须是 paper 或 live"
+        if mode == self.broker.mode:
+            return True, ""
+        if self.db.open_trades(period=self.settings.PERIOD):
+            return False, "该策略还有未结算持仓，等结算后再切换"
+        if self._broker_factory is None:
+            return False, "当前进程未配置切换能力"
+        try:
+            broker = self._broker_factory(mode)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"无法切换到 {mode}: {exc}"
+        old = self.broker.mode
+        self.settings.TRADING_MODE = mode
+        self.broker = broker
+        self.risk = RiskManager(
+            self.db, self.settings, period=self.settings.PERIOD, mode=mode
+        )
+        self._last_balance = None
+        self._last_balance_ts = 0.0
+        self._stats_cache = None
+        self.mode_fallback = ""
+        self.mode_note = ""
+        log.warning("runtime.mode_changed", period=self.settings.PERIOD,
+                    old=old, new=mode)
+        return True, ""
+
     # ── settlement ────────────────────────────────────────────────────────
 
     def _maybe_settle(self, now: float) -> None:
@@ -626,8 +798,10 @@ class Runtime:
         self._settle_task = self._spawn(self._settle_open_trades(now), "settle-open-trades")
 
     async def _settle_open_trades(self, now: float) -> None:
-        for trade in self.db.open_trades(mode=self.broker.mode,
-                                         period=self.settings.PERIOD):
+        # Deliberately not filtered by mode: if the operator switches
+        # paper/live, any position opened under the previous mode must still
+        # settle instead of being stranded forever.
+        for trade in self.db.open_trades(period=self.settings.PERIOD):
             slot = int(trade["slot"])
             end_ts = slot + self.settings.window_seconds
             if now < end_ts + 5:
@@ -841,6 +1015,8 @@ class Runtime:
                 "name": self.settings.APP_NAME,
                 "mode": mode,
                 "paper": self.settings.is_paper,
+                "mode_fallback": self.mode_fallback,
+                "mode_note": self.mode_note,
                 "asset": self.settings.ASSET,
                 "period": self.settings.PERIOD,
                 "uptime_s": now - self._started_at,
@@ -856,6 +1032,10 @@ class Runtime:
                 "max_entry_price": self.settings.MAX_ENTRY_PRICE,
                 "min_entry_price": self.settings.MIN_ENTRY_PRICE,
                 "stake_usd": self.settings.STAKE_USD,
+                "entry_shares": int(self.settings.ENTRY_SHARES),
+                "order_type": self.settings.ENTRY_ORDER_TYPE,
+                "gtd_timeout_s": self.settings.GTD_FILL_TIMEOUT_S,
+                "maker_fee_rate": self.settings.MAKER_FEE_RATE,
                 "exec_slippage": self.settings.EXEC_SLIPPAGE,
                 "fee_rate": self.settings.TAKER_FEE_RATE,
                 "max_spread": self.settings.MAX_SPREAD_AT_ENTRY,

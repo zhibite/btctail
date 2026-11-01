@@ -19,10 +19,21 @@ def test_validation_rejects_inconsistent_cap():
     assert any("MAX_ENTRY_PRICE" in message for message in errors)
 
 
-def test_live_mode_requires_credentials():
-    settings = Settings(TRADING_MODE="live", API_KEY="", WALLET_PRIVATE_KEY="",
-                        MAX_ENTRY_PRICE=0.94)
-    assert any("实盘" in message for message in settings.validation_errors())
+def test_mode_defaults():
+    settings = Settings()
+    assert settings.TRADING_MODE == "live"
+    assert settings.TRADING_MODE_5M == "paper"
+    assert settings.for_period("15m").TRADING_MODE == "live"
+    assert settings.for_period("5m").TRADING_MODE == "paper"
+
+
+def test_gtd_needs_five_shares():
+    settings = Settings(ENTRY_ORDER_TYPE="gtd", ENTRY_SHARES=1,
+                        ENTRY_WINDOW_SEC=60, CONFIRM_SEC=10)
+    assert any("5 股" in message for message in settings.validation_errors())
+    settings = Settings(ENTRY_ORDER_TYPE="gtd", ENTRY_SHARES=5,
+                        ENTRY_WINDOW_SEC=60, CONFIRM_SEC=10)
+    assert settings.validation_errors() == []
 
 
 def test_coerce_bounds():
@@ -96,9 +107,15 @@ class StubRuntime:
         self._started_at = time.time()
         self._last_balance_ts = time.time()
 
+    def set_mode(self, mode):
+        self.broker.mode = mode
+        self.settings.TRADING_MODE = mode
+        return True, ""
+
     def status(self, **kwargs):
         return {
-            "app": {"mode": "paper", "paper": True, "uptime_s": 1.0,
+            "app": {"mode": self.broker.mode, "paper": self.broker.mode == "paper",
+                    "uptime_s": 1.0, "mode_fallback": "",
                     "period": self.settings.PERIOD, "asset": "BTC"},
             "params": {}, "window": None, "strategy": None, "quote": None,
             "risk": self.risk.snapshot(), "balance": 1000.0,
@@ -208,3 +225,39 @@ def test_pages_render(client):
         assert marker in page.text, path
         assert "/static/app.js" in page.text
         assert "{{NAV}}" not in page.text
+
+
+def test_all_pages_require_login(client):
+    # No session yet: every page bounces to /login, even / and /trades.
+    for path in ("/", "/trades", "/config", "/research"):
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code in (302, 307), path
+        assert "/login" in response.headers.get("location", ""), path
+    assert client.get("/api/status").status_code == 401
+    assert client.get("/api/trades").status_code == 401
+
+    # A static asset must stay reachable so the login page can render.
+    assert client.get("/static/style.css").status_code == 200
+
+
+def test_mode_endpoint_switches_strategy(client):
+    client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
+    response = client.post("/api/control/mode",
+                           json={"strategy": "5m", "mode": "live"})
+    assert response.status_code == 200
+    assert response.json()["mode"] == "live"
+    status = {s["app"]["period"]: s for s in client.get("/api/status").json()["strategies"]}
+    assert status["5m"]["app"]["mode"] == "live"
+    assert status["15m"]["app"]["mode"] == "paper"
+
+
+def test_empty_password_closes_dashboard(tmp_path):
+    state = StubState(tmp_path)
+    state.settings.WEB_PASSWORD = ""
+    set_state(state)
+    with TestClient(app) as client:
+        response = client.get("/", follow_redirects=False)
+        assert response.status_code in (302, 307)
+        assert client.get("/api/status").status_code == 401
+        assert client.get("/api/health").status_code == 200
+    state.db.close()

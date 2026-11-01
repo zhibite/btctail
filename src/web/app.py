@@ -433,6 +433,25 @@ async def api_release(
     return {"ok": True, "killswitch": result}
 
 
+class ModePayload(BaseModel):
+    strategy: str = "15m"
+    mode: str
+
+
+@app.post("/api/control/mode")
+async def api_set_mode(payload: ModePayload,
+                       _: str = Depends(_require_login)) -> dict:
+    runtime = _runtime(payload.strategy)
+    ok, message = runtime.set_mode(payload.mode)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    period = runtime.settings.PERIOD
+    runtime_config.save_mode(_db(), period, payload.mode)
+    _db().add_event("INFO", "control.mode",
+                    {"period": period, "mode": payload.mode})
+    return {"ok": True, "mode": runtime.broker.mode}
+
+
 class PausePayload(BaseModel):
     strategy: str = "all"
     minutes: int = Field(30, ge=1, le=7 * 24 * 60)
