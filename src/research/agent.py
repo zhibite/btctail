@@ -43,7 +43,7 @@ CancelFn = Callable[[], bool]
 def build_system_prompt(settings: Settings) -> str:
     period = settings.PERIOD
     window = settings.window_seconds
-    stake = settings.STAKE_USD
+    stake = settings.ENTRY_NOTIONAL_USD
     current = settings.strategy_params()
     if period == "5m":
         focus = f"""当前研究 **5 分钟** 市场（窗口 {window} 秒，单笔 {stake:.0f} USDC）。
@@ -55,7 +55,8 @@ def build_system_prompt(settings: Settings) -> str:
   最后 10 秒 +5.88%（t=3.41，仅 109 笔）。最后 10–15 秒的样本很小，且 1 秒 K 线不是订单簿，
   实盘可能无法按回测价成交。
 - 10 秒确认不适合 5m（30 秒窗口等 10 秒太久）；默认确认 0 秒。
-- 因此 5m 的搜索空间是窗口 5–30 秒、确认 0–10 秒、上限 0.88–0.96。
+- 实盘观察到：5m 经常在最后 30 秒直接从 0.90 以下跳到 0.985–0.9995，按 0.90 触发时价格已经超过 0.92 上限，导致几乎每个窗口都被跳过。
+- 因此 5m 的搜索空间放宽为：窗口 10–90 秒、阈值 0.80–0.94、确认 0–15 秒、上限 0.85–0.96。优先探索「更早触发、更低阈值」是否能在 0.92 上限内成交。
 - 对 5m 的结论要更保守：验证集为正、t ≥ 2、且 0.01 滑点下仍不为负，才值得考虑。"""
         baseline_note = "当前实盘 5m 参数（可被本次调优替换）"
     else:
@@ -313,7 +314,7 @@ class TuningAgent:
             "tunable_keys": sorted(TUNABLE_SPECS),
             "current_live_params": {
                 **self.settings.strategy_params(),
-                "stake": self.settings.STAKE_USD,
+                "stake": self.settings.ENTRY_NOTIONAL_USD,
                 "slippage": self.settings.EXEC_SLIPPAGE,
                 "fee_rate": self.settings.TAKER_FEE_RATE,
             },

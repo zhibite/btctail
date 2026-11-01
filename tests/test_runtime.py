@@ -256,7 +256,7 @@ async def test_gtd_fills_at_the_signal_price_as_maker(tmp_path):
     settings = Settings(
         DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
         MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
-        ENTRY_ORDER_TYPE="gtd", ENTRY_SHARES=5, GTD_FILL_TIMEOUT_S=0.5,
+        ENTRY_ORDER_TYPE="gtd", ENTRY_NOTIONAL_USD=10, GTD_FILL_TIMEOUT_S=0.5,
         MAKER_FEE_RATE=0.0,
     )
     # ask == mid at the poll -> the resting buy gets filled by a seller.
@@ -272,7 +272,8 @@ async def test_gtd_fills_at_the_signal_price_as_maker(tmp_path):
     await runtime._maybe_refresh_quote(aw, END - 40)
 
     trade = db.recent_trades()[0]
-    assert trade["shares"] == pytest.approx(5.0)
+    # 10 USDC / limit 0.94 -> ~10.64 shares, filled at the 0.93 rest price.
+    assert trade["shares"] == pytest.approx(10 / 0.94, abs=1e-4)
     assert trade["entry_price"] == pytest.approx(0.93)
     assert trade["fee"] == pytest.approx(0.0)   # maker fee is zero
     extra = json.loads(trade["extra"])
@@ -285,7 +286,7 @@ async def test_gtd_unfilled_falls_back_to_fak(tmp_path):
     settings = Settings(
         DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
         MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
-        ENTRY_ORDER_TYPE="gtd", ENTRY_SHARES=5, GTD_FILL_TIMEOUT_S=0.5,
+        ENTRY_ORDER_TYPE="gtd", ENTRY_NOTIONAL_USD=10, GTD_FILL_TIMEOUT_S=0.5,
         ENTRY_FALLBACK_FAK=True,
     )
     # ask never touches the resting price, so the GTD cannot fill.

@@ -416,7 +416,7 @@
               fmt.price(params.threshold) + " / " + fmt.price(params.max_entry_price) + " / " +
               fmt.duration(params.entry_window_sec) + "</div>" +
             '<div class="k">下单</div><div class="v">' +
-              (params.entry_shares || "--") + " 股 · " +
+              (params.entry_notional_usd || "--") + " U · " +
               String(params.order_type || "").toUpperCase() +
               (params.order_type === "gtd" ? " · 等 " + params.gtd_timeout_s + "s" : "") + "</div>" +
             '<div class="k">本次窗口峰值</div><div class="v">UP ' +

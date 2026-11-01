@@ -113,7 +113,7 @@
             </select>
           </label>
           <label class="field"><span class="label">候选数量</span>
-            <input type="number" id="opt-iterations" value="32" min="4" max="200" step="4">
+            <input type="number" id="opt-iterations" value="48" min="4" max="200" step="4">
           </label>
           <label class="field"><span class="label">最少交易数</span>
             <input type="number" id="opt-min-trades" value="20" min="1" max="200" step="1">
@@ -131,7 +131,7 @@
         <div class="hr"></div>
         <p class="small muted" style="margin:0">
           搜索只为训练集排名，前 4 名（外加基线）才进入验证集；只有验证集为正的候选才可能被推荐。
-          5m 的搜索空间默认是窗口 5–30 秒、确认 0–10 秒、上限 0.88–0.96。
+          5m 的搜索空间更宽：窗口 10–90 秒、阈值 0.80–0.94、确认 0–15 秒、上限 0.85–0.96。
         </p>
       </div>
     </div>

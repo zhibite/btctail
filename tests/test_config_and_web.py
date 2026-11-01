@@ -28,10 +28,12 @@ def test_mode_defaults():
 
 
 def test_gtd_needs_five_shares():
-    settings = Settings(ENTRY_ORDER_TYPE="gtd", ENTRY_SHARES=1,
+    # At the 0.94 cap, 1 USDC converts to ~1.06 shares: below the CLOB's
+    # 5-share minimum for a resting order.
+    settings = Settings(ENTRY_ORDER_TYPE="gtd", ENTRY_NOTIONAL_USD=1,
                         ENTRY_WINDOW_SEC=60, CONFIRM_SEC=10)
     assert any("5 股" in message for message in settings.validation_errors())
-    settings = Settings(ENTRY_ORDER_TYPE="gtd", ENTRY_SHARES=5,
+    settings = Settings(ENTRY_ORDER_TYPE="gtd", ENTRY_NOTIONAL_USD=10,
                         ENTRY_WINDOW_SEC=60, CONFIRM_SEC=10)
     assert settings.validation_errors() == []
 

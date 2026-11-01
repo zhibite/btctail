@@ -88,6 +88,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("dataset", help="show available data")
 
     def add_common(p):
+        # Allow --period both before and after the subcommand. SUPPRESS keeps
+        # the global value when the flag is omitted here.
+        p.add_argument("--period", choices=["15m", "5m"], default=argparse.SUPPRESS)
         p.add_argument("--start", default=None)
         p.add_argument("--end", default=None)
         # None = use the period's current live parameters.
@@ -115,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     opt.add_argument("--validate-end", default=None)
 
     ag = sub.add_parser("agent", help="LLM parameter-tuning agent")
+    ag.add_argument("--period", choices=["15m", "5m"], default=argparse.SUPPRESS)
     ag.add_argument("--goal", default="在控制回撤的前提下最大化净收益")
     ag.add_argument("--start", default=None)
     ag.add_argument("--end", default=None)
@@ -125,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         "validate",
         help="frozen-rule out-of-sample check using the CURRENT runtime params",
     )
+    val.add_argument("--period", choices=["15m", "5m"], default=argparse.SUPPRESS)
     val.add_argument("--start", required=True, help="新数据开始日期 YYYY-MM-DD")
     val.add_argument("--end", required=True, help="新数据结束日期 YYYY-MM-DD")
     val.add_argument("--slippage", type=float, default=0.005)

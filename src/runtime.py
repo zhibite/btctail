@@ -450,8 +450,16 @@ class Runtime:
             return
 
         limit = settings.entry_limit_for(decision.price)
-        shares = max(1, int(settings.ENTRY_SHARES))
-        notional = round(shares * limit, 2)
+        notional = round(float(settings.ENTRY_NOTIONAL_USD), 2)
+        # GTD/FAK orders at the CLOB are share-sized for limit orders; derive
+        # the share count from the USDC budget at the maximum price we would
+        # pay, so a full fill never costs more than the configured notional.
+        shares = round_down(notional / limit, 0.0001) if limit > 0 else 0.0
+        if shares <= 0:
+            self._record_signal(aw, decision="skip", skip_reason="invalid_order_size",
+                                decision_obj=decision, confirm_price=current)
+            aw.signal_recorded = True
+            return
         ask = fresh.ask(decision.side)
 
         # Prefer a recent cached balance: a slow balance call must not delay
@@ -499,7 +507,11 @@ class Runtime:
             spread=spread, depth=depth, mode=mode,
         )
 
-        entry_info: dict = {"order_type": "gtd" if use_gtd else "fak"}
+        entry_info: dict = {
+            "order_type": "gtd" if use_gtd else "fak",
+            "entry_notional_usd": notional,
+            "planned_shares": round(shares, 4),
+        }
         fill: Optional[EntryFill] = None
 
         if use_gtd:
@@ -513,7 +525,7 @@ class Runtime:
             if order is None:
                 entry_info["fallback"] = "place_failed"
                 if settings.ENTRY_FALLBACK_FAK and aw.end_ts - self._now() > 3.0:
-                    fill = await self._entry_fak(market, decision, fresh, limit, shares)
+                    fill = await self._entry_fak(market, decision, fresh, limit, notional)
                 else:
                     self._record_signal(aw, decision="skip", skip_reason="gtd_place_failed",
                                         decision_obj=decision, confirm_price=current,
@@ -570,7 +582,7 @@ class Runtime:
                     remaining = aw.end_ts - self._now()
                     if settings.ENTRY_FALLBACK_FAK and remaining > 3.0:
                         entry_info["fallback"] = "fak"
-                        fill = await self._entry_fak(market, decision, fresh, limit, shares)
+                        fill = await self._entry_fak(market, decision, fresh, limit, notional)
                     else:
                         self._record_signal(aw, decision="skip", skip_reason="gtd_unfilled",
                                             decision_obj=decision, confirm_price=current,
@@ -582,7 +594,7 @@ class Runtime:
                         aw.signal_recorded = True
                         return
         else:
-            fill = await self._entry_fak(market, decision, fresh, limit, shares)
+            fill = await self._entry_fak(market, decision, fresh, limit, notional)
 
         if fill is None:
             self._record_signal(aw, decision="skip", skip_reason="execution_missing",
@@ -688,15 +700,14 @@ class Runtime:
         )
 
     async def _entry_fak(self, market: MarketInfo, decision: EntryDecision,
-                         quote: Quote, limit: float, shares: int) -> EntryFill:
-        """Taker entry sized in shares, crossing no higher than `limit`."""
+                         quote: Quote, limit: float, notional: float) -> EntryFill:
+        """Taker entry spending `notional` USDC, crossing no higher than `limit`."""
         ask = quote.ask(decision.side)
         if ask is not None and ask > limit + 1e-9:
             return EntryFill(False, error="ask_above_limit")
-        notional = round(shares * limit, 2)
         return await self.broker.buy(
             market=market, side=decision.side, signal_price=decision.price,
-            stake=notional, limit_price=limit, quote=quote,
+            stake=round(float(notional), 2), limit_price=limit, quote=quote,
         )
 
     async def _wait_limit_fill(self, order, aw: ActiveWindow,
@@ -1035,7 +1046,7 @@ class Runtime:
                 "max_entry_price": self.settings.MAX_ENTRY_PRICE,
                 "min_entry_price": self.settings.MIN_ENTRY_PRICE,
                 "stake_usd": self.settings.STAKE_USD,
-                "entry_shares": int(self.settings.ENTRY_SHARES),
+                "entry_notional_usd": float(self.settings.ENTRY_NOTIONAL_USD),
                 "order_type": self.settings.ENTRY_ORDER_TYPE,
                 "gtd_timeout_s": self.settings.GTD_FILL_TIMEOUT_S,
                 "maker_fee_rate": self.settings.MAKER_FEE_RATE,

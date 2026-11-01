@@ -73,12 +73,15 @@ class Settings(BaseSettings):
     # frozen configuration). The 5m strategy has its own *_5M overrides and
     # is the one meant for continuous agent tuning.
     ENTRY_WINDOW_SEC: float = 60.0     # only act in the last N seconds
-    ENTRY_THRESHOLD: float = 0.90      # first side to reach this triggers
+    ENTRY_THRESHOLD: float = 0.88      # first side to reach this triggers
     CONFIRM_SEC: float = 10.0          # wait, then require it is still >= threshold
     MAX_ENTRY_PRICE: float = 0.94      # skip if the confirmed price is >= this
     MIN_ENTRY_PRICE: float = 0.0       # 0 disables
-    STAKE_USD: float = 10.0          # legacy: backtest notional only
-    ENTRY_SHARES: int = 5            # live sizing: shares per entry
+    STAKE_USD: float = 10.0          # backtest notional (same as live notional)
+    # Live sizing is by USDC. A GTD limit order must be sized in shares, so
+    # the runtime converts: shares = notional / limit (rounded down), which
+    # keeps the documented 10 USDC per trade and the 5-share CLOB minimum.
+    ENTRY_NOTIONAL_USD: float = 10.0
     # "gtd": rest a maker limit at the signal price, then optionally fall
     # back to FAK if it has not filled. "fak": send a taker order directly.
     ENTRY_ORDER_TYPE: str = "gtd"
@@ -97,19 +100,19 @@ class Settings(BaseSettings):
     # something worth trading.
     TRADING_MODE_5M: str = "paper"
 
-    # 5m defaults follow the doc's best simple 5m configuration:
-    # last 30s / 0.90 / no confirmation / 0.92 cap (BTC +1.04% ROI, t=1.35,
-    # 1,338 trades Aug-Oct). The confirm filter is not used on 5m because a
-    # 30s window leaves no room for a 10s wait. The doc's "last 10-20s"
-    # rows are subsets of these entries, not shorter entry windows -- the
-    # agent searches that dimension explicitly.
-    ENTRY_WINDOW_SEC_5M: float = 30.0
+    # 5m defaults start from the doc's best simple configuration
+    # (0.90 / no confirmation / 0.92 cap) and use the last 20 seconds, which
+    # the June-October experiment found superior to 30s: +404.17U / ROI
+    # +1.35% / t=2.67 vs the 30s baseline +308.68 / +0.69% / t=1.61, and it
+    # survives 0.01 slippage (+248.60) while the baseline barely does
+    # (+78.29). The confirm filter stays off because the window is too short.
+    ENTRY_WINDOW_SEC_5M: float = 20.0
     ENTRY_THRESHOLD_5M: float = 0.90
     CONFIRM_SEC_5M: float = 0.0
     MAX_ENTRY_PRICE_5M: float = 0.92
     MIN_ENTRY_PRICE_5M: float = 0.0
     STAKE_USD_5M: float = 5.0
-    ENTRY_SHARES_5M: int = 5
+    ENTRY_NOTIONAL_USD_5M: float = 5.0
     REARM_AFTER_FAILED_CONFIRM_5M: bool = False
 
     # ── Execution ─────────────────────────────────────────────────────────
@@ -221,8 +224,13 @@ class Settings(BaseSettings):
     def dataset_root(self) -> Path:
         if self.DATASET_ROOT:
             return Path(self.DATASET_ROOT)
+        # Prefer the copy shipped/downloaded into this project, then the
+        # sibling research export used during development.
+        local = self.collect_dir
+        if local.exists() and any(local.glob("asset=*/period=*/date=*")):
+            return local
         sibling = _ROOT.parent.parent / "predicttick" / "data" / "dataset"
-        return sibling if sibling.exists() else self.collect_dir
+        return sibling if sibling.exists() else local
 
     @property
     def is_paper(self) -> bool:
@@ -270,7 +278,7 @@ class Settings(BaseSettings):
             clone.MAX_ENTRY_PRICE = float(self.MAX_ENTRY_PRICE_5M)
             clone.MIN_ENTRY_PRICE = float(self.MIN_ENTRY_PRICE_5M)
             clone.STAKE_USD = float(self.STAKE_USD_5M)
-            clone.ENTRY_SHARES = int(self.ENTRY_SHARES_5M)
+            clone.ENTRY_NOTIONAL_USD = float(self.ENTRY_NOTIONAL_USD_5M)
             clone.REARM_AFTER_FAILED_CONFIRM = bool(self.REARM_AFTER_FAILED_CONFIRM_5M)
             clone.TRADING_MODE = (self.TRADING_MODE_5M or self.TRADING_MODE).strip().lower()
         return clone
@@ -291,7 +299,7 @@ class Settings(BaseSettings):
         errors: list[str] = []
         for name in ("ENTRY_WINDOW_SEC", "ENTRY_THRESHOLD", "CONFIRM_SEC",
                      "MAX_ENTRY_PRICE", "MIN_ENTRY_PRICE", "STAKE_USD",
-                     "EXEC_SLIPPAGE", "TAKER_FEE_RATE"):
+                     "ENTRY_NOTIONAL_USD", "EXEC_SLIPPAGE", "TAKER_FEE_RATE"):
             try:
                 if not math.isfinite(float(getattr(self, name))):
                     errors.append(f"{name} 必须是有限数字")
@@ -323,10 +331,18 @@ class Settings(BaseSettings):
             errors.append("TRADING_MODE 必须是 paper 或 live")
         if self.ENTRY_ORDER_TYPE not in ("gtd", "fak"):
             errors.append("ENTRY_ORDER_TYPE 必须是 gtd 或 fak")
-        if int(self.ENTRY_SHARES) <= 0:
-            errors.append("ENTRY_SHARES 必须 > 0")
-        if self.ENTRY_ORDER_TYPE == "gtd" and int(self.ENTRY_SHARES) < 5:
-            errors.append("GTD 挂单最少 5 股；请把下单股数设为 >= 5 或改用 fak")
+        if self.ENTRY_NOTIONAL_USD <= 0:
+            errors.append("ENTRY_NOTIONAL_USD 必须 > 0")
+        # A GTD is sized in shares; at the highest allowed price the order
+        # must still reach the CLOB's 5-share minimum.
+        if (
+            self.ENTRY_ORDER_TYPE == "gtd"
+            and self.MAX_ENTRY_PRICE > 0
+            and self.ENTRY_NOTIONAL_USD / self.MAX_ENTRY_PRICE < 5
+        ):
+            errors.append(
+                "GTD 挂单最少 5 股；请把单笔金额提高到至少 5 × 入场价上限，或改用 fak"
+            )
         if self.GTD_FILL_TIMEOUT_S <= 0:
             errors.append("GTD_FILL_TIMEOUT_S 必须 > 0")
         if self.MAKER_FEE_RATE < 0 or self.MAKER_FEE_RATE > 0.5:
@@ -352,9 +368,9 @@ TUNABLE_SPECS: dict[str, dict] = {
     "MIN_ENTRY_PRICE": {"group": "strategy", "type": "float", "min": 0.0, "max": 0.95, "step": 0.01,
                         "label": "入场价下限",
                         "help": "0 表示不启用。"},
-    "ENTRY_SHARES": {"group": "strategy", "type": "int", "min": 1, "max": 100000, "step": 1,
-                     "label": "下单股数(shares)",
-                     "help": "GTD 与 FAK 都按股数下单。5 股在 0.92 时约 4.6 USDC。"},
+    "ENTRY_NOTIONAL_USD": {"group": "strategy", "type": "float", "min": 1, "max": 100000,
+                           "step": 1, "label": "单笔金额(USDC)",
+                           "help": "按金额下单；GTD 会按限价换算成股数（最少 5 股）。"},
     "EXEC_SLIPPAGE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.05, "step": 0.001,
                       "label": "执行滑点上限",
                       "help": "GTD/FAK 限价 = 信号价 + 该值。回测敏感性 0.005 / 0.01。"},

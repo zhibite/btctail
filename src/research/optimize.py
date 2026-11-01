@@ -63,10 +63,15 @@ DEFAULT_SPACE: dict[str, Bounds] = {
 # profitable 5m pocket is the last 10-20 s with a 0.92 cap, so the grid
 # centres on that region.
 SPACE_5M: dict[str, Bounds] = {
-    "entry_window_sec": Bounds(5, 30, 1, "int"),
-    "threshold": Bounds(0.86, 0.95, 0.005),
-    "confirm_sec": Bounds(0, 10, 1, "int"),
-    "max_entry_price": Bounds(0.88, 0.96, 0.005),
+    # Live observation: 5m markets often jump from <0.90 straight to
+    # 0.985-0.9995 inside the last 30 seconds, so a 0.90-threshold rule only
+    # sees entries above the 0.92 cap and skips nearly every window. The
+    # search therefore has to look earlier and lower: trigger at 0.80-0.94,
+    # over windows up to 90 s, with confirmation optionally in play.
+    "entry_window_sec": Bounds(10, 90, 5, "int"),
+    "threshold": Bounds(0.80, 0.94, 0.005),
+    "confirm_sec": Bounds(0, 15, 1, "int"),
+    "max_entry_price": Bounds(0.85, 0.96, 0.005),
 }
 
 
@@ -271,7 +276,15 @@ def optimize(
     candidates: list[dict] = []
     seen: set[tuple] = set()
 
+    base_values = base.to_dict()
+
     def _add(values: dict, label: str) -> None:
+        # A cap at or below the threshold can never fill (entry requires
+        # threshold <= p < cap). With a wide grid this would burn a large
+        # share of the random draws, so reject those combinations up front.
+        merged = {**base_values, **values}
+        if float(merged.get("max_entry_price", 1.0)) <= float(merged.get("threshold", 0.0)):
+            return
         key = tuple(sorted((k, round(float(v), 6)) for k, v in values.items()))
         if key in seen:
             return
@@ -430,9 +443,13 @@ def format_report(result: OptimizeResult) -> str:
         lines.append(head + tail)
     if result.baseline:
         train = result.baseline.get("train") or {}
+        params = result.baseline.get("params") or {}
         lines.append("")
         lines.append(
-            f"基线（文档推荐 60s / 0.90 / 10s / 0.94）训练集净利 "
+            f"基线（{float(params.get('entry_window_sec', 0)):.0f}s / "
+            f"{float(params.get('threshold', 0)):.3f} / "
+            f"{float(params.get('confirm_sec', 0)):.0f}s / "
+            f"{float(params.get('max_entry_price', 0)):.3f}）训练集净利 "
             f"{train.get('net_pnl', 0):.2f}，ROI {(train.get('roi') or 0) * 100:.2f}%"
         )
     return "\n".join(lines)

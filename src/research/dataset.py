@@ -176,7 +176,7 @@ def horizon_seconds(entry_window_sec: float, confirm_sec: float) -> int:
     """Sampled span each market needs, bucketed so cache keys stay stable
     across an optimiser's candidate grid."""
     needed = entry_window_sec + confirm_sec + 30
-    for bucket in (300, 600, 900, 1200):
+    for bucket in (120, 300, 600, 900, 1200):
         if needed <= bucket:
             return bucket
     return 1800
