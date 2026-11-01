@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>研究 / Agent · PolyTail</title>
+  <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
+  <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
+</head>
+<body data-page="research">
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>BTC 尾盘</small></span></div>
+      {{NAV}}
+      <div class="topbar-right">
+        <span class="badge gray" id="agent-ready">--</span>
+        <span class="mono small muted" id="clock"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="page-head">
+      <div>
+        <h1>研究 / 参数 Agent</h1>
+        <p>按策略独立研究；回测与优化强制样本外验证，Agent 不能直接改实盘参数</p>
+      </div>
+      <div class="btn-row strategy-tabs">
+        <button class="btn small" data-rs-strategy="15m">15m</button>
+        <button class="btn small primary" data-rs-strategy="5m">5m</button>
+      </div>
+    </div>
+
+    <div class="grid cols-2">
+      <div class="card">
+        <div class="card-head"><div class="card-title">历史数据集</div></div>
+        <div class="small" id="hist-info">--</div>
+        <div class="small faint" style="margin-top:6px">默认读取同级 predicttick 的 6 个月导出；可用 DATASET_ROOT 指定。</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title">实盘采集数据</div></div>
+        <div class="small" id="live-info">--</div>
+        <div class="small faint" style="margin-top:6px">机器人每个窗口最后 5 分钟按 1 秒采样，按周期分别写入。</div>
+      </div>
+    </div>
+
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title plain">单组回测</div>
+          <button class="btn primary small" id="bt-run">开始回测</button>
+        </div>
+        <div class="form-grid cols-3">
+          <label class="field"><span class="label">数据源</span>
+            <select id="bt-dataset">
+              <option value="history">历史数据集</option>
+              <option value="live">实盘采集</option>
+            </select>
+          </label>
+          <label class="field"><span class="label">开始日期</span>
+            <input type="text" id="bt-start" placeholder="2026-08-01">
+          </label>
+          <label class="field"><span class="label">结束日期</span>
+            <input type="text" id="bt-end" placeholder="2026-10-31">
+          </label>
+
+          <label class="field"><span class="label">入场窗口(秒)</span>
+            <input type="number" data-field="bt-entry_window_sec" value="60" min="5" max="600" step="1">
+          </label>
+          <label class="field"><span class="label">触发阈值</span>
+            <input type="number" data-field="bt-threshold" value="0.90" min="0.8" max="0.99" step="0.005">
+          </label>
+          <label class="field"><span class="label">确认秒数</span>
+            <input type="number" data-field="bt-confirm_sec" value="10" min="0" max="120" step="1">
+          </label>
+          <label class="field"><span class="label">入场价上限</span>
+            <input type="number" data-field="bt-max_entry_price" value="0.94" min="0.85" max="0.99" step="0.005">
+          </label>
+          <label class="field"><span class="label">入场价下限</span>
+            <input type="number" data-field="bt-min_entry_price" value="0" min="0" max="0.95" step="0.005">
+          </label>
+          <label class="field"><span class="label">单笔金额(U)</span>
+            <input type="number" data-field="bt-stake" value="10" min="1" max="1000" step="1">
+          </label>
+          <label class="field"><span class="label">滑点(概率点)</span>
+            <input type="number" data-field="bt-slippage" value="0.005" min="0" max="0.05" step="0.001">
+          </label>
+          <label class="field"><span class="label">官方费率</span>
+            <input type="number" data-field="bt-fee_rate" value="0.07" min="0" max="0.2" step="0.001">
+          </label>
+        </div>
+        <div class="small faint" style="margin-top:8px">
+          切换上方策略标签会把该策略当前参数预填到这里。
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title plain">参数搜索（训练 / 验证）</div>
+          <button class="btn primary small" id="opt-run">开始搜索</button>
+        </div>
+        <div class="form-grid cols-3">
+          <label class="field"><span class="label">目标函数</span>
+            <select id="opt-objective">
+              <option value="profit_dd">净利 − 0.5×回撤</option>
+              <option value="pnl">净利</option>
+              <option value="roi">ROI</option>
+              <option value="tstat">t 值</option>
+            </select>
+          </label>
+          <label class="field"><span class="label">候选数量</span>
+            <input type="number" id="opt-iterations" value="32" min="4" max="200" step="4">
+          </label>
+          <label class="field"><span class="label">最少交易数</span>
+            <input type="number" id="opt-min-trades" value="20" min="1" max="200" step="1">
+          </label>
+          <label class="field"><span class="label">训练集结束</span>
+            <input type="text" id="opt-train-end" placeholder="留空 = 前 70% 日期">
+          </label>
+          <label class="field"><span class="label">验证集开始</span>
+            <input type="text" id="opt-validate-start" placeholder="留空 = 训练结束次日">
+          </label>
+          <label class="field"><span class="label">验证集结束</span>
+            <input type="text" id="opt-validate-end" placeholder="留空 = 数据集最后一天">
+          </label>
+        </div>
+        <div class="hr"></div>
+        <p class="small muted" style="margin:0">
+          搜索只为训练集排名，前 4 名（外加基线）才进入验证集；只有验证集为正的候选才可能被推荐。
+          5m 的搜索空间默认是窗口 5–30 秒、确认 0–10 秒、上限 0.88–0.96。
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div class="card-title plain">Agent 调参</div>
+        <div>
+          <span class="small muted" style="margin-right:10px">模型 <span class="mono" id="agent-model">--</span></span>
+          <button class="btn primary small" id="agent-run">运行 Agent</button>
+        </div>
+      </div>
+      <div class="form-grid cols-3">
+        <label class="field" style="grid-column: span 2"><span class="label">研究目标</span>
+          <input type="text" id="ag-goal" value="在控制回撤的前提下最大化净收益；如果样本外不成立就维持冻结参数">
+        </label>
+        <label class="field"><span class="label">最大对话轮次</span>
+          <input type="number" id="ag-iterations" value="6" min="1" max="20" step="1">
+        </label>
+        <label class="field"><span class="label">开始日期</span>
+          <input type="text" id="ag-start" placeholder="留空 = 全部">
+        </label>
+        <label class="field"><span class="label">结束日期</span>
+          <input type="text" id="ag-end" placeholder="留空 = 全部">
+        </label>
+      </div>
+      <div class="hr"></div>
+      <p class="small muted" style="margin:0">
+        Agent 使用 Anthropic API（<span class="mono">ANTHROPIC_API_KEY</span>）。
+        它只能调用回测/搜索/样本外验证工具；<b>finalize 必须有不重叠区间的验证证据</b>，
+        给出的建议也只是写入候选，需你在下方或「参数」页确认后才生效。
+      </p>
+    </div>
+
+    <div class="card hidden" id="job-panel" style="margin-top:16px">
+      <div class="card-head">
+        <div class="card-title plain" id="job-title">任务</div>
+        <div class="btn-row">
+          <button class="btn small" id="cancel-run">取消</button>
+          <button class="btn small primary hidden" id="apply-best">应用建议参数</button>
+        </div>
+      </div>
+      <div class="progress"><i id="job-bar" style="width:0%"></i></div>
+      <div class="small muted" id="job-status" style="margin-top:8px">--</div>
+      <div class="hr"></div>
+      <div id="job-report"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><div class="card-title">历史运行</div></div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>ID</th><th>策略</th><th>类型</th><th>状态</th><th>开始</th><th></th></tr></thead>
+          <tbody id="run-history"><tr><td colspan="6" class="muted center">暂无记录</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

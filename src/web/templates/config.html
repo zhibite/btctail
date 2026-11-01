@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>参数与风控 · PolyTail</title>
+  <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
+  <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
+</head>
+<body data-page="config">
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>BTC 尾盘</small></span></div>
+      {{NAV}}
+      <div class="topbar-right">
+        <span class="badge gray" id="cfg-mode">--</span>
+        <span class="badge gray" id="cfg-asset">--</span>
+        <span id="clock" class="mono small muted"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="page-head">
+      <div>
+        <h1>参数与风控 <span class="badge blue" id="cfg-scope">15m</span></h1>
+        <p>每个策略独立配置；保存后写入数据库，<b>下一个窗口</b>生效。15m 建议保持冻结，5m 由 Agent 调优。</p>
+      </div>
+      <div class="btn-row strategy-tabs">
+        <button class="btn small primary" data-strategy="15m">15m</button>
+        <button class="btn small" data-strategy="5m">5m</button>
+        <span style="width:10px"></span>
+        <button class="btn small" id="cfg-reset">恢复默认</button>
+      </div>
+    </div>
+
+    <div id="cfg-errors" class="hidden"></div>
+
+    <form id="cfg-form">
+      <div class="grid cols-3">
+        <div class="card">
+          <div class="card-head"><div class="card-title">策略</div></div>
+          <div id="g-strategy" class="form-grid" style="grid-template-columns:1fr"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">执行</div></div>
+          <div id="g-execution" class="form-grid" style="grid-template-columns:1fr"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">风控</div></div>
+          <div id="g-risk" class="form-grid" style="grid-template-columns:1fr"></div>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn primary">保存参数</button>
+        <span class="small muted">先用「研究 / Agent」页验证再改；15m 参数不建议频繁调整。</span>
+      </div>
+    </form>
+
+    <div class="grid cols-2" style="margin-top:20px">
+      <div class="card">
+        <div class="card-head"><div class="card-title">运行控制</div></div>
+        <div id="ctrl-state" class="alert info">状态加载中…</div>
+        <div class="btn-row">
+          <button class="btn danger" id="kill-btn">停止新开仓</button>
+          <button class="btn" id="release-btn">恢复运行</button>
+          <button class="btn" id="pause-btn">暂停 N 分钟</button>
+          <button class="btn ghost" id="resume-btn">取消暂停</button>
+        </div>
+        <div class="hr"></div>
+        <p class="small muted" style="margin:0">
+          控制只作用于当前选中的策略。风控（日亏损、连亏、暂停）按策略独立计数，
+          纸面与实盘也不会互相影响。「停止」不会平掉已有持仓，它们仍持有到结算。
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">钱包（两策略共享）</div></div>
+        <div class="kv">
+          <div class="k">模式</div><div class="v" id="wallet-mode">--</div>
+          <div class="k">可用余额</div><div class="v" id="wallet-balance">--</div>
+        </div>
+        <div class="hr"></div>
+        <p class="small muted" style="margin:0">
+          纸面模式的余额是模拟资金（初始 <span class="mono">PAPER_START_BALANCE</span>），
+          与实盘互不影响。实盘余额来自 CLOB <span class="mono">/balance-allowance</span>。
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <div class="card-head"><div class="card-title">关于这些参数</div></div>
+      <div class="md">
+        <ul>
+          <li><b>入场窗口</b>：15m 用 60 秒；5m 只有 300 秒，默认只看最后 30 秒（文档中 5m 唯一稳定盈利的口袋是最后 10–20 秒）。</li>
+          <li><b>触发阈值</b>：0.90。提高会减少交易、抬高胜率，也会抬高入场价。</li>
+          <li><b>确认秒数</b>：15m 用 10 秒过滤假突破；5m 默认 0，因为窗口太短，等待会错过结算前的最佳价格。</li>
+          <li><b>入场价上限</b>：15m 用 0.94（0.94–0.95 档价差偏弱）；5m 用 0.92（文档的最佳简单版本）。</li>
+          <li><b>执行滑点</b>：FAK 限价 = 信号价 + 该值。若盘口卖价高于限价，程序会直接放弃而不是发一张必然不成交的单。</li>
+          <li><b>官方费率</b>：fee = 份额 × 费率 × p × (1−p)，默认 0.07。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

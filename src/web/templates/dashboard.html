@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PolyTail · BTC 尾盘策略</title>
+  <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
+  <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
+</head>
+<body data-page="dashboard">
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>BTC 尾盘</small></span></div>
+      {{NAV}}
+      <div class="topbar-right">
+        <span id="conn" class="badge gray">稳定</span>
+        <span id="clock" class="mono small muted"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="page-head">
+      <div>
+        <h1>双策略总览</h1>
+        <p>15m：冻结参数（60s / 0.90 / 10s / 0.94） · 5m：实盘 + Agent 持续调优</p>
+      </div>
+      <div class="btn-row">
+        <button class="btn small danger" id="stop-all">全部停止新开仓</button>
+        <button class="btn small" id="release-all">全部恢复</button>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">合计交易</div><div class="v" id="ov-trades">--</div><div class="s">两个策略已结算合计</div></div>
+      <div class="stat"><div class="k">合计净收益</div><div class="v" id="ov-pnl">--</div><div class="s">已扣官方费用</div></div>
+      <div class="stat"><div class="k">合计 ROI</div><div class="v" id="ov-roi">--</div><div class="s">按投入本金</div></div>
+      <div class="stat"><div class="k">持仓 / 胜率</div><div class="v" id="ov-open">--</div><div class="s">胜率 <span id="ov-winrate">--</span></div></div>
+    </div>
+
+    <div class="grid cols-2" id="strategy-grid" style="margin-top:16px">
+      <div class="card"><div class="muted small">等待状态…</div></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div class="card-title">最近信号（两策略合并）</div>
+        <a href="/trades" class="small">交易记录 →</a>
+      </div>
+      <div class="table-wrap" id="signals-all"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><div class="card-title">策略说明</div></div>
+      <div class="md">
+        <ul>
+          <li><b>15m</b>：3 个月回测 248 笔、胜率 97.18%、+4.27% ROI（t=3.75）。参数按文档冻结，
+            不建议继续调参；用「参数」页的样本外检验确认新数据仍然成立。</li>
+          <li><b>5m</b>：文档显示核心规则是滑点陷阱；最强的只是「最后 10–20 秒」这个时间子集
+            （BTC 最后 10 秒 +5.88%、t=3.41，但仅 109 笔）。默认按最佳简单版本起步：
+            最后 30 秒 / 0.92 上限 / 无确认 / 5 USDC，再用「研究 / Agent」页探索更短窗口。</li>
+          <li>两个策略共享一个钱包，但风控（日亏损、连亏、暂停）按策略独立计算。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

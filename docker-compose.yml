@@ -1,0 +1,22 @@
+services:
+  polytail:
+    build: .
+    container_name: polytail-btc15
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: "8013"
+      DATA_DIR: /app/data
+      DATASET_ROOT: /app/data/dataset
+    ports:
+      - "8013:8013"
+    volumes:
+      # SQLite, collected 1s samples and logs must survive redeploys.
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

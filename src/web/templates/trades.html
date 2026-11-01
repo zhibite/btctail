@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>交易记录 · PolyTail</title>
+  <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
+  <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
+</head>
+<body data-page="trades">
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>BTC 尾盘</small></span></div>
+      {{NAV}}
+      <div class="topbar-right">
+        <span id="clock" class="mono small muted"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="page-head">
+      <div>
+        <h1>交易记录</h1>
+        <p>每笔交易都按「信号价 → 成交价 → 结算」完整记录，滑点可直接与回测假设对比</p>
+      </div>
+      <div class="btn-row">
+        <button class="btn small primary" data-period="">全部周期</button>
+        <button class="btn small" data-period="15m">15m</button>
+        <button class="btn small" data-period="5m">5m</button>
+        <span style="width:10px"></span>
+        <button class="btn small primary" data-mode="">全部模式</button>
+        <button class="btn small" data-mode="paper">纸面</button>
+        <button class="btn small" data-mode="live">实盘</button>
+      </div>
+    </div>
+
+    <div id="redeem-banner" class="hidden"></div>
+    <div id="redeem-list" style="margin-bottom:16px"></div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">交易数</div><div class="v" id="t-trades">--</div><div class="s">已结算</div></div>
+      <div class="stat"><div class="k">胜率</div><div class="v" id="t-winrate">--</div><div class="s">盈亏平衡 = 平均入场价</div></div>
+      <div class="stat"><div class="k">净收益</div><div class="v" id="t-net">--</div><div class="s">已扣官方费用</div></div>
+      <div class="stat"><div class="k">ROI</div><div class="v" id="t-roi">--</div><div class="s">按投入本金</div></div>
+      <div class="stat"><div class="k">平均入场价</div><div class="v" id="t-avg">--</div><div class="s">信号中间价</div></div>
+      <div class="stat"><div class="k">价差</div><div class="v" id="t-edge">--</div><div class="s">胜率 − 平均入场价</div></div>
+      <div class="stat"><div class="k">最大回撤</div><div class="v" id="t-dd">--</div><div class="s">U</div></div>
+      <div class="stat"><div class="k">t 值</div><div class="v" id="t-tstat">--</div><div class="s">费用合计 <span id="t-fees">--</span></div></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><div class="card-title">累计盈亏</div></div>
+      <svg id="t-equity" class="chart"></svg>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><div class="card-title">全部交易</div></div>
+      <div class="table-wrap" id="all-trades"></div>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# PolyTail BTC tail-favorite bot (15m frozen + 5m agent-tuned)
+#   pip install -r requirements.txt
+#   pip install -e ".[dev,agent]"     # + tests + LLM tuning agent
+
+websockets>=12
+httpx>=0.27
+pydantic>=2.6
+pydantic-settings>=2.2
+python-dotenv>=1.0
+py-clob-client-v2>=1.0,<2
+eth-account>=0.13
+
+# Web dashboard (served in-process on WEB_PORT, default 8013)
+fastapi>=0.111
+uvicorn[standard]>=0.30
+
+# Research / backtest / parameter agent
+pandas>=2.1
+numpy>=1.26
+# anthropic>=0.40      # optional: LLM parameter-tuning agent
+# web3>=6.0            # optional: on-chain redemption helper

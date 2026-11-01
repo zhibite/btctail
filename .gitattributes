@@ -1,0 +1,13 @@
+# Normalize line endings so Windows and Linux checkouts produce the same bytes.
+* text=auto
+*.py   text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.txt  text eol=lf
+*.sh   text eol=lf
+Dockerfile text eol=lf

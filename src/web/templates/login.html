@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · PolyTail</title>
+  <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
+  <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
+</head>
+<body data-page="login">
+  <div class="login-wrap">
+    <div class="card login-card">
+      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>BTC 15m</small></span></div>
+      <h1>登录</h1>
+      <p>参数与研究页面需要登录。凭证来自环境变量 <span class="mono">WEB_USERNAME</span> /
+        <span class="mono">WEB_PASSWORD</span>。</p>
+      <div id="login-error" class="hidden"></div>
+      <form id="login-form">
+        <label class="field" style="margin-bottom:12px">
+          <span class="label">用户名</span>
+          <input type="text" id="username" autocomplete="username" autofocus>
+        </label>
+        <label class="field" style="margin-bottom:18px">
+          <span class="label">密码</span>
+          <input type="password" id="password" autocomplete="current-password">
+        </label>
+        <button type="submit" class="btn primary" style="width:100%">登录</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
