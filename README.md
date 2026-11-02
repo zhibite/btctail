@@ -5,7 +5,7 @@
 | 策略 | 默认模式 | 配置 | 定位 |
 |---|---|---|---|
 | **BTC 15m** | **实盘** | 最后 60 秒 / **0.88** / 10 秒确认 / 上限 0.94 / 10 USDC | 8–10 月实验后把阈值从 0.90 调到 0.88，成交约 +64% |
-| **BTC 5m** | **纸面** | 最后 20 秒 / 0.90 / 无确认 / 上限 0.92 / 5 USDC | Agent 持续调优（文档显示 5m 核心规则是滑点陷阱，只有短窗口小口袋） |
+| **BTC 5m** | **纸面** | 最后 20 秒 / 0.90 / 无确认 / 上限 0.92 / 10 USDC | Agent 持续调优（文档显示 5m 核心规则是滑点陷阱，只有短窗口小口袋） |
 
 两个策略默认都先尝试 **GTD 挂单**（maker，费率 0），未成交再按配置回退 FAK。
 
@@ -53,7 +53,7 @@ python -m src.research.cli validate --period 5m --start 2026-11-01 --end 2026-12
 | 任一侧首次达到阈值即触发 | 0.88 | 0.90 |
 | 等待确认秒数 | 10 | 0 |
 | 确认时价格仍 ≥ 阈值，且 **严格小于** 上限 | 0.94 | 0.92 |
-| 单笔金额 | 10 USDC | 5 USDC |
+| 单笔金额 | 10 USDC | 10 USDC |
 | 下单方式 | GTD 优先，未成交回退 FAK | 同左 |
 | 买入后持有到结算 | ✓ | ✓ |
 
@@ -160,8 +160,8 @@ src/
 2. 先用 `TRADING_MODE=paper` 跑几天，在「交易记录」页按周期核对滑点与拒绝原因。
 3. 模式默认已经是 **15m 实盘 / 5m 纸面**，可以在网页「参数」页按策略切换
    （写入数据库，重启后保留）。切换会拒绝有未结算持仓的策略。
-4. **建议先把 5m 的 `ENTRY_NOTIONAL_USD_5M` 设为 5 并保持纸面**，确认信号、成交回报、
-   结算记账都正确后，再在面板把 5m 切到实盘。
+4. **5m 默认单笔 `ENTRY_NOTIONAL_USD_5M=10`**。建议先用纸面或小仓位实盘验证信号、成交回报、
+   结算记账，再逐步放大；切换前确认钱包余额能覆盖 15m + 5m 的同时持仓。
 5. 必须设置 `WEB_PASSWORD`（所有页面都要登录）。
 
 风控（每个策略独立计数，纸面/实盘也不混）：
@@ -199,6 +199,16 @@ python -m src.research.cli backtest --period 15m --start 2026-08-01 --end 2026-1
 python -m src.research.cli backtest --period 5m --start 2026-08-01 --end 2026-10-31 \
   --entry-window-sec 30 --threshold 0.90 --confirm-sec 0 --max-entry-price 0.92
 ```
+
+跨资产检验：用 **BTC 15m 的当前参数**回测 ETH 15m，默认同时跑 BTC 基线并做对比：
+
+```bash
+python scripts/backtest_eth15m.py
+python scripts/backtest_eth15m.py --start 2026-08-01 --end 2026-10-31
+python scripts/backtest_eth15m.py --slippage 0.01 --no-compare
+```
+
+结果写入 `data/research/eth_15m_btc_params/`（`report.md`、`summary_*.json`、`trades_*.json`）。
 
 ### 7.2 样本外搜索
 

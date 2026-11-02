@@ -205,7 +205,7 @@ def run_backtest(
     summary = build_summary(
         trades, skips, params, elapsed=time.time() - started,
         days=[d for d, _ in days], markets_seen=markets_seen, period=period,
-        root=str(root),
+        root=str(root), asset=asset,
     )
     tables = build_tables(trades)
     equity = build_equity(trades)
@@ -280,7 +280,7 @@ def metrics(trades: list[dict]) -> dict:
 
 def build_summary(trades: list[dict], skips: dict[str, int], params: BacktestParams,
                   *, elapsed: float, days: list[str], markets_seen: int,
-                  period: str, root: str) -> dict:
+                  period: str, root: str, asset: str = "BTC") -> dict:
     m = metrics(trades)
     daily = {}
     for trade in trades:
@@ -308,7 +308,7 @@ def build_summary(trades: list[dict], skips: dict[str, int], params: BacktestPar
                 )
     return {
         **m,
-        "asset": "BTC",
+        "asset": asset.upper(),
         "period": period,
         "dataset_root": root,
         "date_min": days[0] if days else None,

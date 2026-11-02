@@ -25,6 +25,12 @@ def test_mode_defaults():
     assert settings.TRADING_MODE_5M == "paper"
     assert settings.for_period("15m").TRADING_MODE == "live"
     assert settings.for_period("5m").TRADING_MODE == "paper"
+    # 5m sizing is 10 USDC for both the backtest and the live order.
+    assert settings.STAKE_USD_5M == 10.0
+    assert settings.ENTRY_NOTIONAL_USD_5M == 10.0
+    five = settings.for_period("5m")
+    assert five.STAKE_USD == 10.0
+    assert five.ENTRY_NOTIONAL_USD == 10.0
 
 
 def test_gtd_needs_five_shares():

@@ -111,8 +111,11 @@ class Settings(BaseSettings):
     CONFIRM_SEC_5M: float = 0.0
     MAX_ENTRY_PRICE_5M: float = 0.92
     MIN_ENTRY_PRICE_5M: float = 0.0
-    STAKE_USD_5M: float = 5.0
-    ENTRY_NOTIONAL_USD_5M: float = 5.0
+    # Backtest stake and live order size share one number so the research
+    # results and the deployed strategy cannot drift apart. The operator
+    # chose 10 USDC for 5m after the rare-entry review.
+    STAKE_USD_5M: float = 10.0
+    ENTRY_NOTIONAL_USD_5M: float = 10.0
     REARM_AFTER_FAILED_CONFIRM_5M: bool = False
 
     # ── Execution ─────────────────────────────────────────────────────────
