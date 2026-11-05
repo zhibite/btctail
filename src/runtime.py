@@ -3,8 +3,9 @@
 One asyncio loop drives everything. Per 15-minute window it:
 
   1. discovers the market for the current slot (retrying until Gamma lists it)
-  2. polls the CLOB midpoint from `end - COLLECT_SEC` onward and records the
-     1-second series (so the tuning agent can learn from live data)
+  2. polls the CLOB midpoint from the final `WS_SUBSCRIBE_SEC` window onward
+     and records the 1-second series (so the tuning agent can learn from live
+     data); earlier display polls are dashboard-only
   3. feeds ticks into `LateFavoriteStrategy` during the last 60 s
   4. on a confirmed signal, runs the risk guards and sends one FAK buy
   5. holds the shares to resolution and books the PnL
@@ -257,6 +258,19 @@ class Runtime:
             sleep_s = max(0.05, self._sleep_target(self._now()) - elapsed)
             await asyncio.sleep(sleep_s)
 
+    def _ws_lead(self, aw: ActiveWindow) -> float:
+        """Seconds before window end when quoting/WS should start."""
+        lead = float(self.settings.WS_SUBSCRIBE_SEC or 0.0)
+        if aw.strategy is not None:
+            # A long entry+confirm window must start earlier than the global
+            # default (HYPE 15m: 105s + 10s + 5s buffer).
+            lead = max(
+                lead,
+                float(aw.strategy.params.entry_window_sec)
+                + float(aw.strategy.params.confirm_sec) + 5.0,
+            )
+        return lead
+
     def _sleep_target(self, now: float) -> float:
         if not self.enabled:
             return 2.0
@@ -265,12 +279,12 @@ class Runtime:
             return 1.0
         if now >= aw.end_ts:
             return 0.5
+        # Before the short WS window only the dashboard needs prices.
+        if now < aw.end_ts - self._ws_lead(aw):
+            return self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
         if now >= aw.entry_start_ts:
             return self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
-        if now >= aw.end_ts - self.settings.COLLECT_SEC:
-            return self.settings.POLL_INTERVAL_MS / 1000.0
-        # Before the collection window only the dashboard needs prices.
-        return self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
+        return self.settings.POLL_INTERVAL_MS / 1000.0
 
     async def _tick(self, now: float) -> None:
         self._cycle_count += 1
@@ -406,31 +420,18 @@ class Runtime:
     async def _maybe_refresh_quote(self, aw: ActiveWindow, now: float) -> None:
         if aw.market is None:
             return
-        # Never start observing later than the entry window: a strategy whose
-        # ENTRY_WINDOW_SEC exceeds COLLECT_SEC would otherwise never trigger.
-        observe_from = aw.end_ts - max(
-            self.settings.COLLECT_SEC, self.settings.ENTRY_WINDOW_SEC + 30
-        )
-        display_only = now < observe_from
+        # The strategy only needs the final WS window. Before it, poll at
+        # the slow display interval so the dashboard still has prices but
+        # no strategy/collector work happens.
+        ws_from = aw.end_ts - self._ws_lead(aw)
+        display_only = now < ws_from
         if display_only:
             interval = self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
         elif now >= aw.entry_start_ts:
             interval = self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
         else:
             interval = self.settings.POLL_INTERVAL_MS / 1000.0
-        # Subscribe to the shared stream only near the end of the window.
-        # Keep a safety floor for strategies whose entry+confirm window is
-        # longer than WS_SUBSCRIBE_SEC (HYPE 15m is 105s + 10s).
-        if aw.strategy is not None:
-            ws_lead = max(
-                float(self.settings.WS_SUBSCRIBE_SEC or 0.0),
-                float(aw.strategy.params.entry_window_sec)
-                + float(aw.strategy.params.confirm_sec) + 5.0,
-            )
-        else:
-            ws_lead = float(self.settings.WS_SUBSCRIBE_SEC or 0.0)
-        if (now >= aw.end_ts - ws_lead and self.ws is not None
-                and not aw.ws_watched):
+        if not display_only and self.ws is not None and not aw.ws_watched:
             self.ws.watch([aw.market.token_up, aw.market.token_down], owner=self.key)
             aw.ws_watched = True
         if now - aw.quote_ts < interval:

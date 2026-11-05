@@ -354,11 +354,20 @@ async def test_ws_subscribes_only_near_the_window_end(tmp_path):
     set_clock(runtime, END - 500)
     await runtime._maybe_refresh_quote(aw, END - 500)
     assert ws.watched == []
+    assert svc.fetches == 1
+    # Display polling is every 5s, not every second.
+    set_clock(runtime, END - 499)
+    await runtime._maybe_refresh_quote(aw, END - 499)
+    assert svc.fetches == 1
+    set_clock(runtime, END - 495)
+    await runtime._maybe_refresh_quote(aw, END - 495)
+    assert svc.fetches == 2
 
-    # Inside the collection window but still more than 120s before the end.
+    # Still more than 120s before the end: display only, no subscription.
     set_clock(runtime, END - 200)
     await runtime._maybe_refresh_quote(aw, END - 200)
     assert ws.watched == []
+    assert svc.fetches == 3
 
     set_clock(runtime, END - 80)
     await runtime._maybe_refresh_quote(aw, END - 80)

@@ -114,7 +114,9 @@ async def test_full_window_flow(tmp_path: Path):
     assert files, "collector should have written samples"
     with files[0].open(encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
-    assert len(rows) > 250
+    # Collection starts with the final WS window (120 s), not the full
+    # 300 s display period.
+    assert len(rows) > 100
     assert {row["slug"] for row in rows} == {f"btc-updown-15m-{SLOT}"}
     assert all(float(row["up_price"]) > 0 for row in rows)
 

@@ -242,7 +242,7 @@ class Settings(BaseSettings):
 
     # ── Data collection (feeds the tuning agent) ──────────────────────────
     DATA_COLLECT_ENABLED: bool = True
-    COLLECT_SEC: int = 300             # sample the last N seconds of each window
+    COLLECT_SEC: int = 300             # legacy; collection now starts with the WS window
     DATA_DIR: str = ""                 # default <repo>/data
 
     # ── CLOB credentials / endpoints ──────────────────────────────────────
