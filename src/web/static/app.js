@@ -54,11 +54,20 @@
       if (!ts) return "--";
       return new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour12: false });
     },
+    clockUTC(ts) {
+      if (!ts) return "--";
+      return new Date(ts * 1000).toLocaleTimeString("zh-CN", {
+        hour12: false, timeZone: "UTC",
+      });
+    },
     date(ts) {
       if (!ts) return "--";
+      // Trade/signal timestamps are bookkeeping data: show them in UTC so
+      // they line up with the server logs and the UTC-aligned windows.
       return new Date(ts * 1000).toLocaleString("zh-CN", {
         hour12: false, month: "2-digit", day: "2-digit",
         hour: "2-digit", minute: "2-digit", second: "2-digit",
+        timeZone: "UTC",
       });
     },
     esc(s) {
@@ -264,7 +273,7 @@
     if (!signals.length) return '<div class="muted small center" style="padding:18px">暂无信号</div>';
     return "<table><thead><tr>" +
       (showStrategy ? "<th>策略</th>" : "") +
-      "<th>时间</th><th>方向</th><th class='num'>触发价</th><th class='num'>确认价</th><th>结果</th></tr></thead><tbody>" +
+      "<th>时间 (UTC)</th><th>方向</th><th class='num'>触发价</th><th class='num'>确认价</th><th>结果</th></tr></thead><tbody>" +
       signals.map((s) =>
         "<tr>" +
         (showStrategy ? "<td><span class='badge gray'>" +
@@ -326,7 +335,7 @@
         setText("#window-" + period + "-remaining",
           win ? fmt.duration(win.remaining_s) : "--");
         setText("#window-" + period + "-end",
-          win ? "结算 " + fmt.clock(win.end_ts) : "--");
+          win ? "结算 " + fmt.clockUTC(win.end_ts) + " UTC" : "--");
         const bar = document.getElementById("window-" + period + "-bar");
         if (bar) {
           const pct = win
@@ -529,7 +538,7 @@
         banner.innerHTML = "有 " + unredeemed.length + " 笔已中奖的仓位尚未赎回（" +
           fmt.money(unredeemed.reduce((a, t) => a + t.shares, 0)) + " 份额）。请到 " +
           "<a href='https://polymarket.com/portfolio' target='_blank' rel='noopener'>Polymarket 持仓页</a> 赎回后再点「已赎回」。";
-        $("#redeem-list").innerHTML = "<table><thead><tr><th>策略</th><th>时间</th><th>方向</th><th class='num'>份额</th><th></th></tr></thead><tbody>" +
+        $("#redeem-list").innerHTML = "<table><thead><tr><th>策略</th><th>时间 (UTC)</th><th>方向</th><th class='num'>份额</th><th></th></tr></thead><tbody>" +
           unredeemed.map((t) => "<tr><td>" + fmt.esc((t.asset || "BTC") + " " + t.period) + "</td><td class='mono'>" + fmt.date(t.entry_ts) +
             "</td><td>" + t.side + "</td><td class='num'>" + fmt.price(t.shares, 4) +
             "</td><td><button class='btn small' data-redeemed='" + t.id + "'>已赎回</button></td></tr>").join("") +
@@ -546,7 +555,7 @@
 
       const rows = d.trades || [];
       if (!rows.length) { $("#all-trades").innerHTML = '<div class="muted small center" style="padding:24px">暂无交易</div>'; return; }
-      $("#all-trades").innerHTML = "<table><thead><tr><th>策略</th><th>模式</th><th>时间</th><th>方向</th>" +
+      $("#all-trades").innerHTML = "<table><thead><tr><th>策略</th><th>模式</th><th>时间 (UTC)</th><th>方向</th>" +
         "<th class='num'>信号价</th><th class='num'>成交价</th><th class='num'>滑点</th>" +
         "<th class='num'>份额</th><th class='num'>成本</th><th class='num'>费用</th>" +
         "<th class='num'>盈亏</th><th>结算</th><th>结果</th></tr></thead><tbody>" +
