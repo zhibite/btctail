@@ -28,6 +28,7 @@ from src.config import (
     PERIODS,
     RECOMMENDED_PARAMS,
     RESEARCHED_ASSETS,
+    TUNABLE_SPECS,
     Settings,
     parse_strategy_key,
     strategy_key,
@@ -357,7 +358,9 @@ async def api_status(_: None = Depends(_require_auth)) -> dict:
             "asset": state.settings.ASSET,
             "password_configured": auth.credentials_configured(state.settings),
         },
-        "strategies": [rt.status() for rt in state.runtimes.values()],
+        # Fourteen cards poll every 2 s; only the latest few rows are ever
+        # rendered (open position + the merged signal table).
+        "strategies": [rt.status(recent_limit=8) for rt in state.runtimes.values()],
     }
 
 
@@ -368,6 +371,7 @@ async def api_strategies(_: None = Depends(_require_auth)) -> dict:
         "assets": list(ASSET_ORDER),
         "periods": list(PERIODS),
         "researched": sorted(RESEARCHED_ASSETS),
+        "specs": TUNABLE_SPECS,
         "strategies": _strategy_meta(),
     }
 
@@ -453,6 +457,36 @@ async def api_get_config(
     key = getattr(runtime, "key", strategy_key(runtime.settings.ASSET,
                                                runtime.settings.PERIOD))
     return runtime_config.payload(runtime.settings, _db(), key)
+
+
+@app.get("/api/config/shared")
+async def api_get_shared_config(_: str = Depends(_require_login)) -> dict:
+    runtimes = _runtimes()
+    reference = runtimes.get("BTC:15m") or next(iter(runtimes.values()), None)
+    if reference is None:
+        raise HTTPException(status_code=503, detail="策略未运行")
+    return runtime_config.shared_payload(reference.settings, _db())
+
+
+class SharedConfigPayload(BaseModel):
+    values: dict[str, Any]
+
+
+@app.put("/api/config/shared")
+async def api_update_shared_config(
+    payload: SharedConfigPayload,
+    _: str = Depends(_require_login),
+) -> dict:
+    ok, errors, applied = runtime_config.update_shared(
+        _runtimes(), _db(), payload.values
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    log.info("config.shared_updated", keys=list(applied), values=applied)
+    _db().add_event("INFO", "config.shared_updated", {"values": applied})
+    reference = _runtimes().get("BTC:15m") or next(iter(_runtimes().values()))
+    return {"ok": True,
+            "values": runtime_config.shared_payload(reference.settings, _db())["values"]}
 
 
 class ConfigPayload(BaseModel):

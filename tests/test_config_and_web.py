@@ -179,7 +179,8 @@ class StubRuntime:
                     "uptime_s": 1.0, "mode_fallback": "", "key": self.key,
                     "enabled": self.settings.ENABLED,
                     "period": self.settings.PERIOD, "asset": self.settings.ASSET},
-            "params": {}, "window": None, "strategy": None, "quote": None,
+            "params": {"exec_slippage": self.settings.EXEC_SLIPPAGE},
+            "window": None, "strategy": None, "quote": None,
             "risk": self.risk.snapshot(), "balance": 1000.0,
             "stats": {"trades": 0}, "equity": [], "recent_trades": [],
             "recent_signals": [], "unredeemed": [],
@@ -270,6 +271,8 @@ def test_strategy_matrix_and_enable_toggle(client):
     matrix = client.get("/api/strategies").json()
     assert matrix["assets"] == ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"]
     assert len(matrix["strategies"]) == 14
+    assert matrix["specs"]["ENTRY_WINDOW_SEC"]["max"] == 600
+    assert matrix["specs"]["ENTRY_NOTIONAL_USD_PAPER"]["step"] == 1
     eth = next(s for s in matrix["strategies"] if s["key"] == "ETH:15m")
     assert eth["enabled"] is False
     assert eth["recommended"]["threshold"] == 0.84
@@ -281,6 +284,32 @@ def test_strategy_matrix_and_enable_toggle(client):
     status = {s["app"]["key"]: s for s in client.get("/api/status").json()["strategies"]}
     assert status["ETH:15m"]["app"]["enabled"] is True
     assert status["BTC:15m"]["app"]["enabled"] is True
+
+
+def test_shared_config_applies_to_every_strategy(client):
+    client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
+    shared = client.get("/api/config/shared").json()
+    assert shared["scope"] == "shared"
+    assert "EXEC_SLIPPAGE" in shared["specs"]
+    assert "DAILY_LOSS_LIMIT_USD" in shared["specs"]
+    assert "ENTRY_WINDOW_SEC" not in shared["specs"]
+
+    response = client.put("/api/config/shared", json={
+        "values": {"EXEC_SLIPPAGE": 0.02, "DAILY_LOSS_LIMIT_USD": 25},
+    })
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+    strategies = client.get("/api/status").json()["strategies"]
+    assert len(strategies) == 14
+    for item in strategies:
+        assert item["params"]["exec_slippage"] == 0.02
+        assert item["risk"]["daily_limit"] == 25
+
+    response = client.put("/api/config/shared", json={
+        "values": {"TAKER_FEE_RATE": 0.9},
+    })
+    assert response.status_code == 400
 
 
 def test_killswitch_is_per_strategy(client):
@@ -299,6 +328,8 @@ def test_pages_render(client):
     response = client.get("/login")
     assert response.status_code == 200
     assert "登录" in response.text
+    assert 'value="admin"' in response.text
+    assert "凭证来自" not in response.text
 
     client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
     for path, marker in (
@@ -313,9 +344,14 @@ def test_pages_render(client):
         assert "/static/app.js" in page.text
         assert "{{NAV}}" not in page.text
         if path == "/config":
-            for asset in ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"):
-                assert f'data-asset="{asset}"' in page.text
-            assert 'data-cfg-period="5m"' in page.text
+            assert 'id="strategy-table"' in page.text
+            assert 'id="ctrl-strategy"' in page.text
+            assert 'id="shared-fields"' in page.text
+            assert "策略列表" in page.text
+            assert "共有参数" in page.text
+        if path == "/":
+            assert 'id="strategy-grid"' in page.text
+            assert "策略说明" not in page.text
 
 
 def test_all_pages_require_login(client):

@@ -14,9 +14,6 @@
       <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>多币种尾盘</small></span></div>
       {{NAV}}
       <div class="topbar-right">
-        <span class="badge gray" id="cfg-mode">--</span>
-        <span class="badge gray" id="cfg-enabled">--</span>
-        <span class="badge gray" id="cfg-asset">--</span>
         <span id="clock" class="mono small muted"></span>
       </div>
     </div>
@@ -25,80 +22,34 @@
   <div class="layout">
     <div class="page-head">
       <div>
-        <h1>参数与风控 <span class="badge blue" id="cfg-scope">BTC:15m</span></h1>
-        <p>7 个币 × 15m / 5m 共 14 个策略独立配置；保存后写入数据库，<b>下一个窗口</b>生效。默认只启用 BTC 15m / 5m，全部纸面；纸面默认 10U/笔，实盘默认 5U/笔。</p>
+        <h1>参数与风控</h1>
+        <p>7 个币 × 15m / 5m，共 14 个策略。直接修改后点该行「保存」，下一个窗口生效。纸面默认 10U/笔，实盘默认 5U/笔。</p>
       </div>
       <div class="btn-row">
-        <button class="btn small" id="cfg-recommended">填入文档推荐</button>
-        <button class="btn small" id="cfg-reset">恢复默认</button>
+        <button class="btn small" id="cfg-refresh">刷新列表</button>
       </div>
-    </div>
-
-    <div class="card tight" style="margin-bottom:16px">
-      <div class="mode-bar" style="flex-wrap:wrap">
-        <span class="card-title plain">选择策略</span>
-        <div class="segmented" role="group" aria-label="币种" id="cfg-assets">
-          <button class="active" data-asset="BTC">BTC</button>
-          <button data-asset="ETH">ETH</button>
-          <button data-asset="SOL">SOL</button>
-          <button data-asset="XRP">XRP</button>
-          <button data-asset="DOGE">DOGE</button>
-          <button data-asset="BNB">BNB</button>
-          <button data-asset="HYPE">HYPE</button>
-        </div>
-        <div class="segmented" role="group" aria-label="周期" id="cfg-periods">
-          <button class="active" data-cfg-period="15m">15m</button>
-          <button data-cfg-period="5m">5m</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="card tight" style="margin-bottom:16px">
-      <div class="card-head">
-        <div class="card-title">策略开关</div>
-        <span class="small muted">点按即保存；未启用的策略不会发现市场或开仓，已有持仓仍会结算。</span>
-      </div>
-      <div class="table-wrap" id="strategy-matrix"></div>
     </div>
 
     <div id="cfg-errors" class="hidden"></div>
 
-    <div class="card tight" style="margin-bottom:16px">
-      <div class="mode-bar">
-        <span class="card-title plain">交易模式</span>
-        <select id="cfg-trading-mode" style="max-width:200px">
-          <option value="paper">纸面（模拟成交）</option>
-          <option value="live">实盘（真实资金）</option>
-        </select>
-        <button class="btn small" id="mode-apply">切换</button>
-        <span class="small muted" id="mode-note">切换在下一个窗口生效；有未结算持仓时会被拒绝。当前全部默认纸面。</span>
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">策略列表</div>
+        <span class="small muted">启用 · 模式 · 窗口 · 阈值 · 确认 · 上限 · 单笔金额</span>
+      </div>
+      <div class="table-wrap" id="strategy-table">
+        <div class="muted small center" style="padding:20px">加载中…</div>
       </div>
     </div>
-
-    <form id="cfg-form">
-      <div class="grid cols-3">
-        <div class="card">
-          <div class="card-head"><div class="card-title">策略</div></div>
-          <div id="g-strategy" class="form-grid" style="grid-template-columns:1fr"></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><div class="card-title">执行</div></div>
-          <div id="g-execution" class="form-grid" style="grid-template-columns:1fr"></div>
-        </div>
-        <div class="card">
-          <div class="card-head"><div class="card-title">风控</div></div>
-          <div id="g-risk" class="form-grid" style="grid-template-columns:1fr"></div>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button type="submit" class="btn primary">保存参数</button>
-        <span class="small muted">推荐参数来自 docs 回测（稳健版）；改动前建议先纸面观察。研究 / Agent 页目前只覆盖 BTC。</span>
-      </div>
-    </form>
 
     <div class="grid cols-2" style="margin-top:20px">
       <div class="card">
         <div class="card-head"><div class="card-title">运行控制</div></div>
+        <div class="mode-bar">
+          <select id="ctrl-strategy" style="max-width:260px">
+            <option value="all">全部启用的策略</option>
+          </select>
+        </div>
         <div id="ctrl-state" class="alert info">状态加载中…</div>
         <div class="btn-row">
           <button class="btn danger" id="kill-btn">停止新开仓</button>
@@ -108,8 +59,7 @@
         </div>
         <div class="hr"></div>
         <p class="small muted" style="margin:0">
-          控制只作用于当前选中的策略。风控（日亏损、连亏、暂停）按策略独立计数，
-          纸面与实盘也不会互相影响。「停止」不会平掉已有持仓，它们仍持有到结算。
+          控制作用于上方选中的策略。「停止」不会平掉已有持仓，它们仍持有到结算。
         </p>
       </div>
 
@@ -121,27 +71,30 @@
         </div>
         <div class="hr"></div>
         <p class="small muted" style="margin:0">
-          纸面模式的余额是模拟资金（初始 <span class="mono">PAPER_START_BALANCE</span>），
-          与实盘互不影响。实盘余额来自 CLOB <span class="mono">/balance-allowance</span>。
+          纸面余额是模拟资金（初始 <span class="mono">PAPER_START_BALANCE</span>），与实盘互不影响。
+          实盘余额来自 CLOB。
         </p>
       </div>
     </div>
+
+    <details class="card" style="margin-top:20px">
+      <summary style="cursor:pointer;font-weight:600">共有参数（执行 / 风控，作用于全部策略）</summary>
+      <div class="mode-bar" style="margin-top:14px">
+        <button class="btn small" id="shared-save">保存共有参数</button>
+        <span class="small muted">滑点、下单方式、费率、日亏损、连亏暂停等；14 个策略共用这一套值</span>
+      </div>
+      <div id="shared-fields" class="form-grid cols-2" style="margin-top:12px"></div>
+    </details>
 
     <div class="card" style="margin-top:20px">
       <div class="card-head"><div class="card-title">关于这些参数</div></div>
       <div class="md">
         <ul>
-          <li><b>启用策略</b>：「启用该策略」关闭后不再发现新市场或开仓，已有持仓仍会结算。默认只启用 BTC 15m / 5m。</li>
-          <li><b>文档推荐</b>（稳健版，窗口 / 阈值 / 确认 / 上限）：BTC 15m 60/0.94/15/0.96 · BTC 5m 10/0.88/0/0.90 ·
-            ETH 15m 45/0.84/10/0.92 · ETH 5m 15/0.90/0/0.93 · SOL 15m 45/0.84/0/0.93 · SOL 5m 20/0.84/0/0.95 ·
-            BNB 15m 60/0.84/0/0.96 · BNB 5m 10/0.84/1/0.95 · DOGE 15m 60/0.86/10/0.95 · DOGE 5m 25/0.84/2/0.98 ·
-            HYPE 15m 105/0.88/10/0.97 · HYPE 5m 15/0.90/0/0.93。XRP 暂无回测文档，先用保守通用参数。</li>
-          <li><b>单笔金额</b>：纸面默认 10 USDC、实盘默认 5 USDC，每个策略可分别设置；
-            切换交易模式后会立刻使用对应金额。GTD 会按限价换算成股数，并保证不少于 5 股。</li>
-          <li><b>交易模式</b>：每个币种 × 周期都可以单独选择纸面或实盘，保存后重启仍生效。</li>
-          <li><b>下单方式</b>：默认 <b>GTD</b>——在信号价挂限价买单（maker，费率 0），未成交再回退 FAK。</li>
-          <li><b>官方费率</b>：fee = 份额 × 费率 × p × (1−p)，默认 0.07。</li>
-          <li><b>风控</b>：日亏损、连亏、暂停都按「币种 + 周期」独立计数，纸面与实盘也不会互相影响。</li>
+          <li><b>启用</b>：关闭后不再发现新市场或开仓；已有持仓仍会结算。</li>
+          <li><b>模式</b>：每个币种 × 周期独立选择纸面或实盘；切换时若有未结算持仓会被拒绝。</li>
+          <li><b>窗口 / 阈值 / 确认 / 上限</b>：推荐值来自 <span class="mono">docs/optimal_parameters.md</span> 的稳健版回测；XRP 暂无独立回测，先用保守通用参数。</li>
+          <li><b>单笔金额</b>：纸面默认 10 USDC、实盘默认 5 USDC，均可逐策略修改。GTD 会按限价换算成股数（最少 5 股）。</li>
+          <li><b>风控</b>：日亏损、连亏、暂停按「币种 + 周期 + 模式」独立计数。</li>
         </ul>
       </div>
     </div>

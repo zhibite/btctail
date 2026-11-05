@@ -131,6 +131,7 @@ async def run() -> int:
     strategies: dict[str, Settings] = {}
     for key, strategy in settings.strategy_settings().items():
         runtime_config.apply_overrides(strategy, db, key)
+        runtime_config.apply_shared_overrides(strategy, db)
         runtime_config.apply_mode_override(strategy, db, key)
         strategies[key] = strategy
 

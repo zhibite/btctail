@@ -234,6 +234,11 @@
       value + '</div><div class="s">' + (sub || "") + "</div></div>";
   }
 
+  function compactStat(label, value, cls) {
+    return '<div class="compact-stat"><span>' + label +
+      '</span><b class="' + (cls || "") + '">' + value + "</b></div>";
+  }
+
   function renderTradesTable(trades, opts) {
     const options = opts || {};
     if (!trades.length) return '<div class="muted small center" style="padding:18px">暂无交易</div>';
@@ -304,11 +309,16 @@
         toast(err.message, "error");
       }
     },
+    keyOf(s) {
+      const app = s.app || {};
+      return app.key || (app.asset + ":" + app.period);
+    },
+
     render(data) {
-      const strategies = (data.strategies || [])
-        .filter((s) => s.app.enabled !== false);
+      const all = data.strategies || [];
+      const enabled = all.filter((s) => s.app.enabled !== false);
       const totals = { trades: 0, pnl: 0, cost: 0, wins: 0, open: 0 };
-      strategies.forEach((s) => {
+      enabled.forEach((s) => {
         const st = s.stats || {};
         totals.trades += st.trades || 0;
         totals.pnl += st.pnl || 0;
@@ -324,135 +334,127 @@
       setText("#ov-winrate", totals.trades ? fmt.pct(totals.wins / totals.trades) : "--");
 
       const grid = $("#strategy-grid");
-      grid.innerHTML = strategies.length
-        ? strategies.map((s) => this.card(s)).join("")
-        : '<div class="card"><div class="muted small center" style="padding:24px">没有已启用的策略。到「参数」页开启币种与周期。</div></div>';
-      strategies.forEach((s) => {
-        const key = s.app.key || (s.app.asset + ":" + s.app.period);
-        const chart = document.getElementById("equity-" + key);
-        if (chart) sparkline(chart, (s.equity || []).map((p) => ({ value: p.cumulative })), { height: 150 });
-        const stopBtn = document.querySelector("[data-stop='" + key + "']");
-        if (stopBtn) stopBtn.addEventListener("click", () => this.control("killswitch", key));
-        const releaseBtn = document.querySelector("[data-release='" + key + "']");
-        if (releaseBtn) releaseBtn.addEventListener("click", () => this.control("release", key));
+      grid.innerHTML = all.length
+        ? all.map((s) => this.card(s)).join("")
+        : '<div class="card"><div class="muted small center" style="padding:24px">没有策略</div></div>';
+      $$("[data-act]", grid).forEach((btn) => {
+        btn.addEventListener("click", () => this.control(
+          btn.getAttribute("data-act"), btn.getAttribute("data-key")));
       });
 
-      // merged recent signals
       const merged = [];
-      strategies.forEach((s) => (s.recent_signals || []).forEach((sig) => merged.push(sig)));
+      enabled.forEach((s) => (s.recent_signals || []).forEach((sig) => merged.push(sig)));
       merged.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
       $("#signals-all").innerHTML = renderSignalsTable(merged.slice(0, 12), true);
     },
+
     card(s) {
-      const app = s.app;
+      const app = s.app || {};
       const win = s.window;
       const st = s.strategy;
       const q = s.quote;
-      const risk = s.risk;
-      const stats = s.stats;
+      const risk = s.risk || {};
+      const stats = s.stats || {};
       const params = Object.assign({}, s.params || {}, (st && st.params) || {});
-      const period = app.period;
-      const key = app.key || (app.asset + ":" + period);
-      const modeBadge = app.paper
+      const period = app.period || "";
+      const key = this.keyOf(s);
+      const enabled = app.enabled !== false;
+      const isPaper = app.paper !== false;
+      const modeBadge = isPaper
         ? '<span class="badge blue">纸面</span>'
         : '<span class="badge red">实盘</span>';
-      let statusBadge = '<span class="badge green"><span class="dot pulse"></span>运行</span>';
-      if (app.mode_fallback) {
-        statusBadge = '<span class="badge amber">凭证缺失·纸面</span>';
+      let statusBadge = enabled
+        ? '<span class="badge green"><span class="dot pulse"></span>运行</span>'
+        : '<span class="badge gray">未启用</span>';
+      let action = enabled
+        ? '<button class="btn small ghost" data-act="killswitch" data-key="' +
+          fmt.esc(key) + '">停止</button>'
+        : '<a class="btn small ghost" href="/config">开启</a>';
+      if (enabled && app.mode_fallback) {
+        statusBadge = '<span class="badge amber">凭证缺失</span>';
       }
-      if (risk.killswitch && risk.killswitch.active) {
+      if (enabled && risk.killswitch && risk.killswitch.active) {
         statusBadge = '<span class="badge red">已停止</span>';
-      } else if (risk.paused) {
+        action = '<button class="btn small ghost" data-act="release" data-key="' +
+          fmt.esc(key) + '">恢复</button>';
+      } else if (enabled && risk.paused) {
         statusBadge = '<span class="badge amber">暂停中</span>';
+        action = '<button class="btn small ghost" data-act="resume" data-key="' +
+          fmt.esc(key) + '">恢复</button>';
       }
 
       const remaining = win ? win.remaining_s : 0;
-      const periodS = app.period === "5m" ? 300 : 900;
+      const periodS = period === "5m" ? 300 : 900;
       const pct = win ? Math.max(0, Math.min(100, (remaining / periodS) * 100)) : 0;
       const up = q ? q.up_mid : null;
       const down = q ? q.down_mid : null;
       const activeSide = st && st.trigger_side;
       const open = (s.recent_trades || []).filter((t) => t.status === "open");
       const trade = open[0];
-      const expectedWin = trade ? trade.shares - trade.cost - trade.fee : null;
-      const expectedLoss = trade ? -trade.cost - trade.fee : null;
-
       const triggerText = st && st.trigger_side
-        ? st.trigger_side + " @ " + fmt.price(st.trigger_price) + " · " + fmt.clock(st.trigger_ts)
-        : "尚未触发";
+        ? st.trigger_side + " @" + fmt.price(st.trigger_price)
+        : "--";
       const confirmText = st && st.confirm_in_s !== null && st.confirm_in_s !== undefined
-        ? "将在 " + fmt.duration(st.confirm_in_s) + " 后确认" : "--";
+        ? fmt.duration(st.confirm_in_s) + " 后确认" : "";
+      const positionText = trade
+        ? trade.side + " @" + fmt.price(trade.entry_price) : "空仓";
+      const pnlText = trade
+        ? fmt.money(trade.shares - trade.cost - trade.fee, true) + " / " +
+          fmt.money(-trade.cost - trade.fee)
+        : "";
+      const note = win && win.discovery_error
+        ? "发现失败: " + win.discovery_error : ((st && st.skip_reason) || "");
+      const phaseLabel = win
+        ? (PHASE_LABEL[win.phase] || win.phase || "--")
+        : (enabled ? "等待窗口" : "未启用");
+      const marketText = win && win.market
+        ? win.market.slug : (enabled ? "等待市场发现…" : "未启用");
+      const sec = (value) => value === null || value === undefined
+        ? "--" : Math.round(Number(value)) + "s";
+      const amount = params.entry_notional_usd === undefined
+        ? "--" : params.entry_notional_usd;
 
       return '' +
-        '<div class="card strategy-card">' +
+        '<div class="card strategy-card compact-card' + (enabled ? "" : " is-disabled") + '">' +
           '<div class="card-head">' +
             '<div class="card-title plain">' + fmt.esc(app.asset) + " " +
               fmt.esc(period) + " " + modeBadge + "</div>" +
-            '<div class="btn-row">' + statusBadge +
-              '<button class="btn small ghost" data-stop="' + fmt.esc(key) + '">停止</button>' +
-              '<button class="btn small ghost" data-release="' + fmt.esc(key) + '">恢复</button>' +
-            "</div>" +
+            '<div class="btn-row">' + statusBadge + action + "</div>" +
           "</div>" +
-          '<div class="window-top">' +
-            '<div class="countdown">' + (win ? fmt.duration(win.remaining_s) : "--") + "<small>距结算</small></div>" +
-            '<div class="right small">' +
-              '<div class="mono faint">' + (win && win.market ? fmt.esc(win.market.slug) : "等待市场发现…") + "</div>" +
-              '<div class="faint">' + (win ? fmt.int(win.samples) + " 个采样点" : "") + "</div>" +
-              '<div class="badge gray" style="margin-top:6px">' + fmt.esc(PHASE_LABEL[win && win.phase] || "--") + "</div>" +
-            "</div>" +
+          '<div class="compact-top">' +
+            '<div class="countdown">' + (win ? fmt.duration(win.remaining_s) : "--") +
+              "<small>距结算</small></div>" +
+            '<span class="badge gray">' + fmt.esc(phaseLabel) + "</span>" +
           "</div>" +
           '<div class="progress"><i style="width:' + pct + '%"></i></div>' +
-          '<div class="phase-steps">' + renderPhaseSteps(win && win.phase, st && st.decision) + "</div>" +
-          '<div class="side-row">' +
-            '<div class="side ' + (activeSide === "UP" ? "active" : "") + '">' +
-              '<div class="side-label"><span>UP</span><span class="faint">' + (q && q.up_last ? "最新 " + fmt.price(q.up_last) : "") + "</span></div>" +
-              '<div class="side-price pos">' + fmt.price(up) + "</div>" +
-              '<div class="side-bar"><i style="width:' + (up === null ? 0 : Math.max(0, Math.min(100, up * 100))) + '%"></i></div>' +
-            "</div>" +
-            '<div class="side ' + (activeSide === "DOWN" ? "active" : "") + '">' +
-              '<div class="side-label"><span>DOWN</span><span class="faint">' + (q && q.down_last ? "最新 " + fmt.price(q.down_last) : "") + "</span></div>" +
-              '<div class="side-price neg">' + fmt.price(down) + "</div>" +
-              '<div class="side-bar"><i style="width:' + (down === null ? 0 : Math.max(0, Math.min(100, down * 100))) + '%"></i></div>' +
-            "</div>" +
+          '<div class="compact-prices">' +
+            '<div class="price-chip up' + (activeSide === "UP" ? " active" : "") +
+              '"><span>UP</span><b>' + fmt.price(up) + "</b></div>" +
+            '<div class="price-chip down' + (activeSide === "DOWN" ? " active" : "") +
+              '"><span>DOWN</span><b>' + fmt.price(down) + "</b></div>" +
           "</div>" +
-          '<div class="hr"></div>' +
-          '<div class="kv">' +
-            '<div class="k">首次触发</div><div class="v">' + fmt.esc(triggerText) + "</div>" +
-            '<div class="k">确认</div><div class="v">' + fmt.esc(confirmText) + "</div>" +
-            '<div class="k">阈值 / 上限 / 窗口</div><div class="v">' +
-              fmt.price(params.threshold) + " / " + fmt.price(params.max_entry_price) + " / " +
-              fmt.duration(params.entry_window_sec) + "</div>" +
-            '<div class="k">下单</div><div class="v">' +
-              (params.entry_notional_usd || "--") + " U · " +
-              String(params.order_type || "").toUpperCase() +
-              (params.order_type === "gtd" ? " · 等 " + params.gtd_timeout_s + "s" : "") + "</div>" +
-            '<div class="k">本次窗口峰值</div><div class="v">UP ' +
-              fmt.price(st && st.peak_up) + " · DOWN " + fmt.price(st && st.peak_down) + "</div>" +
-            '<div class="k">放弃原因</div><div class="v">' +
-              fmt.esc(win && win.discovery_error ? "发现失败: " + win.discovery_error
-                : (st && st.skip_reason) || "--") + "</div>" +
-            '<div class="k">持仓</div><div class="v">' +
-              (trade ? trade.side + " @ " + fmt.price(trade.entry_price) : "空仓") + "</div>" +
-            '<div class="k">若胜 / 若负</div><div class="v">' +
-              (trade ? fmt.money(expectedWin, true) + " / " + fmt.money(expectedLoss) : "--") + "</div>" +
+          '<div class="compact-market"><span class="slug mono">' +
+            fmt.esc(marketText) + "</span><span>" +
+            (win ? fmt.int(win.samples) + " 采样" : "") + "</span></div>" +
+          '<div class="compact-meta">' +
+            "<span>阈值 <b>" + fmt.price(params.threshold, 2) + "</b></span>" +
+            "<span>上限 <b>" + fmt.price(params.max_entry_price, 2) + "</b></span>" +
+            "<span>窗口 <b>" + sec(params.entry_window_sec) + "</b></span>" +
+            "<span>确认 <b>" + sec(params.confirm_sec) + "</b></span>" +
+            "<span>金额 <b>" + amount + "U</b></span>" +
           "</div>" +
-          '<div class="hr"></div>' +
-          '<div class="stats compact">' +
-            statTile(null, "交易", fmt.int(stats.trades), "已结算", "") +
-            statTile(null, "胜率", fmt.pct(stats.win_rate), "", "") +
-            statTile(null, "价差", stats.price_edge ? fmt.pp(stats.price_edge) : "--", "胜率−入场", fmt.cls(stats.price_edge)) +
-            statTile(null, "净收益", fmt.money(stats.pnl, true), "U", fmt.cls(stats.pnl)) +
-            statTile(null, "ROI", fmt.pct(stats.roi), "", fmt.cls(stats.roi)) +
-            statTile(null, "平均入场", fmt.price(stats.avg_entry_price), "", "") +
-            statTile(null, "最大回撤", fmt.money(stats.max_drawdown), "U", "neg") +
-            statTile(null, "t 值", stats.t_stat === null || stats.t_stat === undefined ? "--" : Number(stats.t_stat).toFixed(2), "", "") +
+          '<div class="compact-meta">' +
+            "<span>触发 <b>" + fmt.esc(triggerText) + "</b>" +
+              (confirmText ? " · " + confirmText : "") + "</span>" +
+            "<span>持仓 <b>" + fmt.esc(positionText) + "</b></span>" +
+            (trade ? "<span>若胜/负 <b>" + pnlText + "</b></span>" : "") +
           "</div>" +
-          '<div class="hr"></div>' +
-          '<svg class="chart" id="equity-' + fmt.esc(key) + '"></svg>' +
-          '<div class="muted small right" style="margin-top:-4px">累计 ' +
-            fmt.money((s.equity || []).length ? s.equity[s.equity.length - 1].cumulative : 0, true) + " U</div>" +
-          '<div class="table-wrap" style="margin-top:10px">' +
-            renderTradesTable((s.recent_trades || []).slice(0, 5)) +
+          (note ? '<div class="compact-note">' + fmt.esc(note) + "</div>" : "") +
+          '<div class="compact-stats">' +
+            compactStat("交易", fmt.int(stats.trades)) +
+            compactStat("胜率", fmt.pct(stats.win_rate)) +
+            compactStat("净收益", fmt.money(stats.pnl, true), fmt.cls(stats.pnl)) +
+            compactStat("ROI", fmt.pct(stats.roi), fmt.cls(stats.roi)) +
           "</div>" +
         "</div>";
     },
@@ -558,239 +560,344 @@
   };
 
   // ── config page ───────────────────────────────────────────────────────
+  // ── config page: one editable row per strategy ─────────────────────────
+  const MAIN_FIELDS = [
+    { field: "ENTRY_WINDOW_SEC", param: "entry_window_sec", label: "窗口(s)" },
+    { field: "ENTRY_THRESHOLD", param: "threshold", label: "阈值" },
+    { field: "CONFIRM_SEC", param: "confirm_sec", label: "确认(s)" },
+    { field: "MAX_ENTRY_PRICE", param: "max_entry_price", label: "上限" },
+    { field: "ENTRY_NOTIONAL_USD_PAPER", param: "entry_notional_paper", label: "纸面U" },
+    { field: "ENTRY_NOTIONAL_USD_LIVE", param: "entry_notional_live", label: "实盘U" },
+  ];
+
   const configPage = {
-    asset: "BTC",
-    period: "15m",
-    payload: null,
-    get key() { return this.asset + ":" + this.period; },
+    status: [],
+    meta: null,
+
     async init() {
-      $$("[data-asset]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          this.asset = btn.getAttribute("data-asset");
-          activate("#cfg-assets [data-asset]", btn);
-          this.load();
-        });
-      });
-      $$("[data-cfg-period]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          this.period = btn.getAttribute("data-cfg-period");
-          activate("#cfg-periods [data-cfg-period]", btn);
-          this.load();
-        });
-      });
-      await this.load();
-      await this.loadMatrix();
-      $("#cfg-form").addEventListener("submit", (e) => { e.preventDefault(); this.save(); });
-      $("#cfg-reset").addEventListener("click", () => this.reset());
-      $("#cfg-recommended").addEventListener("click", () => this.fillRecommended());
-      $("#mode-apply").addEventListener("click", () => this.applyMode());
+      await this.loadAll();
+      $("#cfg-refresh").addEventListener("click", () => this.loadAll());
       $("#kill-btn").addEventListener("click", () => this.control("killswitch"));
       $("#release-btn").addEventListener("click", () => this.control("release"));
       $("#pause-btn").addEventListener("click", () => this.pause());
       $("#resume-btn").addEventListener("click", () => this.control("resume"));
+      $("#shared-save").addEventListener("click", () => this.saveShared());
       this.statusLoop();
       setInterval(() => this.statusLoop(), 5000);
     },
-    async load() {
-      const payload = await api("/api/config?strategy=" + encodeURIComponent(this.key));
-      this.payload = payload;
-      const groups = { strategy: $("#g-strategy"), execution: $("#g-execution"), risk: $("#g-risk") };
-      Object.keys(groups).forEach((g) => { if (groups[g]) groups[g].innerHTML = ""; });
-      Object.entries(payload.specs).forEach(([key, spec]) => {
-        const target = groups[spec.group] || groups.strategy;
-        if (!target) return;
-        const value = payload.values[key];
-        const step = spec.step || (spec.type === "int" ? 1 : 0.01);
-        let input;
-        if (spec.type === "bool") {
-          input = "<select name='" + key + "'><option value='true'" + (value ? " selected" : "") +
-            ">开启</option><option value='false'" + (value ? "" : " selected") + ">关闭</option></select>";
-        } else if (spec.type === "str") {
-          const options = spec.options || [];
-          input = "<select name='" + key + "'>" + options.map((opt) =>
-            "<option value='" + fmt.esc(opt) + "'" + (String(value) === opt ? " selected" : "") +
-            ">" + fmt.esc(opt) + "</option>").join("") + "</select>";
-        } else {
-          input = "<input type='number' name='" + key + "' value='" + value +
-            "' min='" + spec.min + "' max='" + spec.max + "' step='" + step + "'>";
-        }
-        const overridden = payload.overrides[key] !== undefined;
-        target.insertAdjacentHTML("beforeend",
-          "<label class='field'><span class='label'>" + fmt.esc(spec.label) +
-          (overridden ? " <span class='badge green' style='padding:0 6px;font-size:10px'>已改</span>" : "") +
-          "</span>" + input + "<span class='help'>" + fmt.esc(spec.help) + "</span></label>");
-      });
-      const errEl = $("#cfg-errors");
-      if (payload.errors && payload.errors.length) {
-        errEl.className = "alert error";
-        errEl.textContent = payload.errors.join("；");
-      } else {
-        errEl.className = "hidden";
-      }
-      setText("#cfg-mode", payload.paper ? "纸面" : "实盘");
-      setText("#cfg-enabled", payload.enabled ? "已启用" : "未启用");
-      $("#cfg-enabled").className = "badge " + (payload.enabled ? "green" : "gray");
-      setText("#cfg-asset", payload.asset + " · " + payload.period +
-        (payload.researched === false ? " · 暂无回测" : ""));
-      setText("#cfg-scope", payload.key || this.key);
-      const modeSelect = $("#cfg-trading-mode");
-      if (modeSelect) modeSelect.value = payload.mode;
+
+    keyOf(s) {
+      const app = s.app || {};
+      return app.key || (app.asset + ":" + app.period);
     },
-    async loadMatrix() {
-      const el = $("#strategy-matrix");
+
+    spec(field) {
+      return (this.meta && this.meta.specs && this.meta.specs[field]) || {};
+    },
+
+    showError(message) {
+      const el = $("#cfg-errors");
       if (!el) return;
+      el.className = "alert error";
+      el.textContent = message;
+    },
+
+    hideError() {
+      const el = $("#cfg-errors");
+      if (el) el.className = "hidden";
+    },
+
+    async loadAll() {
       try {
-        const d = await api("/api/strategies");
-        const byKey = {};
-        (d.strategies || []).forEach((s) => { byKey[s.key] = s; });
-        const head = "<table><thead><tr><th>币种</th>" +
-          d.periods.map((p) => "<th>" + fmt.esc(p) + "</th>").join("") +
-          "</tr></thead><tbody>";
-        const rows = d.assets.map((asset) => {
-          const cells = d.periods.map((period) => {
-            const s = byKey[asset + ":" + period];
-            if (!s) return "<td class='muted'>--</td>";
-            return "<td><button class='btn small " + (s.enabled ? "" : "ghost") +
-              "' data-toggle='" + fmt.esc(s.key) + "' data-enabled='" +
-              (s.enabled ? "true" : "false") + "'>" +
-              (s.enabled ? "已启用" : "未启用") + "</button>" +
-              " <span class='small muted'>" + fmt.esc(s.mode || "") + "</span></td>";
-          }).join("");
-          return "<tr><td><b>" + fmt.esc(asset) + "</b></td>" + cells + "</tr>";
-        }).join("");
-        el.innerHTML = head + rows + "</tbody></table>";
-        $$("[data-toggle]", el).forEach((btn) => {
-          btn.addEventListener("click", () => this.toggleStrategy(btn));
-        });
+        const [status, meta] = await Promise.all([
+          api("/api/status"), api("/api/strategies"),
+        ]);
+        this.status = status.strategies || [];
+        this.meta = meta;
+        this.renderTable();
+        this.renderSelects();
+        await this.loadShared();
+        this.statusLoop();
       } catch (err) {
-        el.innerHTML = "<div class='alert error'>开关加载失败: " +
+        if (err.status === 401) { location.href = "/login?next=/config"; return; }
+        this.showError("列表加载失败: " + err.message);
+        const table = $("#strategy-table");
+        if (table) {
+          table.innerHTML = "<div class='alert error'>列表加载失败: " +
+            fmt.esc(err.message) + "</div>";
+        }
+      }
+    },
+
+    inputHtml(field, value) {
+      const spec = this.spec(field);
+      const step = spec.step || (spec.type === "int" ? 1 : 0.01);
+      const v = value === null || value === undefined ? "" : value;
+      return "<input type='number' data-field='" + field + "' value='" + v +
+        "' min='" + (spec.min === undefined ? "" : spec.min) +
+        "' max='" + (spec.max === undefined ? "" : spec.max) +
+        "' step='" + step + "'>";
+    },
+
+    renderTable() {
+      const el = $("#strategy-table");
+      if (!el) return;
+      if (!this.status.length) {
+        el.innerHTML = "<div class='muted small center' style='padding:20px'>没有策略</div>";
+        return;
+      }
+      const head = "<table class='config-table'><thead><tr><th>策略</th><th>启用</th><th>模式</th>" +
+        MAIN_FIELDS.map((f) => "<th class='num'>" + f.label + "</th>").join("") +
+        "<th></th></tr></thead><tbody>";
+      const rows = this.status.map((s) => {
+        const app = s.app || {};
+        const p = s.params || {};
+        const key = this.keyOf(s);
+        const mode = app.mode || "paper";
+        return "<tr data-key='" + fmt.esc(key) + "' data-mode='" + fmt.esc(mode) + "'>" +
+          "<td><span class='badge gray'>" + fmt.esc(app.asset + " " + app.period) + "</span></td>" +
+          "<td><input type='checkbox' data-field='ENABLED'" + (app.enabled ? " checked" : "") + "></td>" +
+          "<td><select data-field='MODE'>" +
+            "<option value='paper'" + (mode === "paper" ? " selected" : "") + ">纸面</option>" +
+            "<option value='live'" + (mode === "live" ? " selected" : "") + ">实盘</option>" +
+          "</select></td>" +
+          MAIN_FIELDS.map((f) => "<td>" + this.inputHtml(f.field, p[f.param]) + "</td>").join("") +
+          "<td><button class='btn small ghost' data-rec='" + fmt.esc(key) + "'>推荐</button> " +
+          "<button class='btn small' data-save='" + fmt.esc(key) + "'>保存</button></td>" +
+          "</tr>";
+      }).join("");
+      el.innerHTML = head + rows + "</tbody></table>";
+      $$("[data-save]", el).forEach((btn) => {
+        btn.addEventListener("click", () => this.saveRow(btn.getAttribute("data-save")));
+      });
+      $$("[data-rec]", el).forEach((btn) => {
+        btn.addEventListener("click", () => this.fillRecommended(btn.getAttribute("data-rec")));
+      });
+    },
+
+    fillRecommended(key) {
+      const tr = $$("#strategy-table tr[data-key]").find((row) => row.getAttribute("data-key") === key);
+      const meta = (this.meta && this.meta.strategies || []).find((s) => s.key === key);
+      if (!tr || !meta || !meta.recommended) return;
+      const rec = meta.recommended;
+      MAIN_FIELDS.forEach((f) => {
+        const input = tr.querySelector("[data-field='" + f.field + "']");
+        if (!input) return;
+        if (f.param === "entry_notional_paper") input.value = 10;
+        else if (f.param === "entry_notional_live") input.value = 5;
+        else if (rec[f.param] !== undefined && rec[f.param] !== null) input.value = rec[f.param];
+      });
+      toast(key + " 已填入 docs 推荐值，点「保存」生效", "ok");
+    },
+
+    renderSelects() {
+      const options = this.status.map((s) => {
+        const app = s.app || {};
+        const key = this.keyOf(s);
+        return "<option value='" + fmt.esc(key) + "'>" +
+          fmt.esc(app.asset + " " + app.period) +
+          (app.enabled ? "" : "（未启用）") + "</option>";
+      }).join("");
+      const ctrl = $("#ctrl-strategy");
+      if (ctrl) {
+        const current = ctrl.value || "all";
+        ctrl.innerHTML = "<option value='all'>全部启用的策略</option>" + options;
+        ctrl.value = Array.from(ctrl.options).some((o) => o.value === current) ? current : "all";
+      }
+    },
+
+    async saveRow(key) {
+      const tr = $$("#strategy-table tr[data-key]").find((row) => row.getAttribute("data-key") === key);
+      if (!tr) return;
+      const values = {
+        ENABLED: tr.querySelector("[data-field='ENABLED']").checked,
+      };
+      MAIN_FIELDS.forEach((f) => {
+        const input = tr.querySelector("[data-field='" + f.field + "']");
+        if (input) values[f.field] = input.value;
+      });
+      const mode = tr.querySelector("[data-field='MODE']").value;
+      const btn = tr.querySelector("[data-save]");
+      if (btn) btn.disabled = true;
+      try {
+        await api("/api/config", {
+          method: "PUT",
+          body: JSON.stringify({ strategy: key, values }),
+        });
+        if (mode !== tr.getAttribute("data-mode")) {
+          try {
+            await api("/api/control/mode", {
+              method: "POST",
+              body: JSON.stringify({ strategy: key, mode }),
+            });
+            tr.setAttribute("data-mode", mode);
+          } catch (modeErr) {
+            tr.querySelector("[data-field='MODE']").value = tr.getAttribute("data-mode");
+            throw modeErr;
+          }
+        }
+        this.hideError();
+        toast(key + " 已保存", "ok");
+        await this.statusLoop();
+        this.renderSelects();
+      } catch (err) {
+        this.showError("保存失败: " + err.message);
+        toast("保存失败: " + err.message, "error");
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    },
+
+    async loadShared() {
+      const target = $("#shared-fields");
+      if (!target) return;
+      try {
+        const cfg = await api("/api/config/shared");
+        const groups = [["execution", "执行"], ["risk", "风控"]];
+        let html = "";
+        groups.forEach(([group, label]) => {
+          const items = Object.entries(cfg.specs).filter(([, spec]) => spec.group === group);
+          if (!items.length) return;
+          html += "<div class='card-title plain' style='grid-column:1/-1;margin-top:6px'>" +
+            label + "</div>";
+          html += items.map(([key, spec]) => {
+            const value = cfg.values[key];
+            const step = spec.step || (spec.type === "int" ? 1 : 0.01);
+            let input;
+            if (spec.type === "bool") {
+              input = "<select data-shared='" + key + "'>" +
+                "<option value='true'" + (value ? " selected" : "") + ">开启</option>" +
+                "<option value='false'" + (value ? "" : " selected") + ">关闭</option></select>";
+            } else if (spec.type === "str") {
+              input = "<select data-shared='" + key + "'>" + (spec.options || []).map((opt) =>
+                "<option value='" + fmt.esc(opt) + "'" + (String(value) === opt ? " selected" : "") +
+                ">" + fmt.esc(opt) + "</option>").join("") + "</select>";
+            } else {
+              input = "<input type='number' data-shared='" + key + "' value='" + value +
+                "' min='" + (spec.min === undefined ? "" : spec.min) +
+                "' max='" + (spec.max === undefined ? "" : spec.max) +
+                "' step='" + step + "'>";
+            }
+            const overridden = cfg.overrides[key] !== undefined;
+            return "<label class='field'><span class='label'>" + fmt.esc(spec.label) +
+              (overridden ? " <span class='badge green' style='padding:0 6px;font-size:10px'>已改</span>" : "") +
+              "</span>" + input + "<span class='help'>" + fmt.esc(spec.help) + "</span></label>";
+          }).join("");
+        });
+        target.innerHTML = html || "<div class='muted small'>没有共有参数</div>";
+        if (cfg.errors && cfg.errors.length) {
+          this.showError(cfg.errors.join("；"));
+        } else {
+          this.hideError();
+        }
+      } catch (err) {
+        target.innerHTML = "<div class='alert error'>共有参数加载失败: " +
           fmt.esc(err.message) + "</div>";
       }
     },
-    async toggleStrategy(btn) {
-      const key = btn.getAttribute("data-toggle");
-      const next = btn.getAttribute("data-enabled") !== "true";
-      if (!confirm((next ? "启用 " : "停用 ") + key + "？")) return;
-      try {
-        await api("/api/config", {
-          method: "PUT",
-          body: JSON.stringify({ strategy: key, values: { ENABLED: next } }),
-        });
-        toast(key + (next ? " 已启用" : " 已停用"), "ok");
-        await this.loadMatrix();
-        if (key === this.key) await this.load();
-        this.statusLoop();
-      } catch (err) {
-        toast("切换失败: " + err.message, "error");
-      }
-    },
-    fillRecommended() {
-      const rec = (this.payload && this.payload.recommended) || {};
-      const form = $("#cfg-form");
-      Object.entries(rec).forEach(([key, value]) => {
-        if (value === null || value === undefined) return;
-        const el = form.querySelector("[name='" + key + "']");
-        if (el) el.value = value;
-      });
-      toast("已填入文档推荐参数，点「保存参数」后生效", "ok");
-    },
-    async save() {
-      const form = $("#cfg-form");
+
+    async saveShared() {
       const values = {};
-      $$("[name]", form).forEach((el) => { values[el.name] = el.value; });
+      $$("[data-shared]", $("#shared-fields")).forEach((el) => {
+        values[el.getAttribute("data-shared")] = el.value;
+      });
       try {
-        await api("/api/config", {
+        await api("/api/config/shared", {
           method: "PUT",
-          body: JSON.stringify({ strategy: this.key, values }),
+          body: JSON.stringify({ values }),
         });
-        toast(this.key + " 参数已保存，下一个窗口生效", "ok");
-        await this.load();
-        this.statusLoop();
+        this.hideError();
+        toast("共有参数已保存，14 个策略下一个窗口生效", "ok");
+        await this.loadShared();
       } catch (err) {
+        this.showError("保存失败: " + err.message);
         toast("保存失败: " + err.message, "error");
       }
     },
-    async reset() {
-      if (!confirm("恢复 " + this.key + " 的默认参数（保留模式与启用状态）？")) return;
-      await api("/api/config/reset?strategy=" + encodeURIComponent(this.key), { method: "POST" });
-      toast("已恢复默认", "ok");
-      await this.load();
-      this.statusLoop();
-    },
-    async applyMode() {
-      const mode = $("#cfg-trading-mode").value;
-      const label = mode === "live" ? "实盘（真实资金）" : "纸面（模拟）";
-      if (!confirm("把 " + this.key + " 切换为 " + label + "？")) return;
-      try {
-        await api("/api/control/mode", {
-          method: "POST",
-          body: JSON.stringify({ strategy: this.key, mode }),
-        });
-        toast(this.key + " 已切换为 " + label, "ok");
-        await this.load();
-        await this.loadMatrix();
-        this.statusLoop();
-      } catch (err) {
-        toast("切换失败: " + err.message, "error");
-      }
-    },
+
     async control(action) {
+      const strategy = $("#ctrl-strategy").value || "all";
       let reason = "";
       if (action === "killswitch") {
-        reason = prompt("停止 " + this.key + " 新开仓的原因（可留空）", "手动停止");
+        reason = prompt("停止 " + strategy + " 新开仓的原因（可留空）", "手动停止");
         if (reason === null) return;
       }
-      await api("/api/control/" + action, {
-        method: "POST",
-        body: JSON.stringify({ strategy: this.key, reason: reason || "" }),
-      });
-      toast(action === "killswitch" ? "已停止" : "已恢复", "ok");
-      this.statusLoop();
+      try {
+        await api("/api/control/" + action, {
+          method: "POST",
+          body: JSON.stringify({ strategy, reason: reason || "" }),
+        });
+        toast(action === "killswitch" ? "已停止" : "已恢复", "ok");
+        this.statusLoop();
+      } catch (err) {
+        toast(err.message, "error");
+      }
     },
+
     async pause() {
-      const minutes = Number(prompt("暂停 " + this.key + " 多少分钟？", "30"));
+      const strategy = $("#ctrl-strategy").value || "all";
+      const minutes = Number(prompt("暂停 " + strategy + " 多少分钟？", "30"));
       if (!minutes || minutes <= 0) return;
-      await api("/api/control/pause", {
-        method: "POST",
-        body: JSON.stringify({ strategy: this.key, minutes, reason: "手动暂停" }),
-      });
-      toast("已暂停", "ok");
-      this.statusLoop();
+      try {
+        await api("/api/control/pause", {
+          method: "POST",
+          body: JSON.stringify({ strategy, minutes, reason: "手动暂停" }),
+        });
+        toast("已暂停", "ok");
+        this.statusLoop();
+      } catch (err) {
+        toast(err.message, "error");
+      }
     },
+
     async statusLoop() {
       try {
-        const s = await api("/api/wallet");
-        const balances = s.balances || {};
-        const values = Array.from(new Set(Object.values(balances)
+        const wallet = await api("/api/wallet");
+        const modes = Object.values(wallet.modes || {});
+        const paper = modes.filter((m) => m === "paper").length;
+        const live = modes.filter((m) => m === "live").length;
+        setText("#wallet-mode", "纸面 " + paper + " · 实盘 " + live);
+        const values = Array.from(new Set(Object.values(wallet.balances || {})
           .filter((v) => v !== null && v !== undefined)
           .map((v) => fmt.money(v) + " U")));
         setText("#wallet-balance", values.length ? values.join(" / ") : "--");
-        setText("#wallet-mode", this.key + " · " + ((s.modes || {})[this.key] || "--"));
+
         const status = await api("/api/status");
-        const card = (status.strategies || []).find((x) =>
-          (x.app.key || (x.app.asset + ":" + x.app.period)) === this.key);
+        this.status = status.strategies || [];
+        const selected = ($("#ctrl-strategy") || {}).value || "all";
         const el = $("#ctrl-state");
+        if (!el) return;
+        if (selected === "all") {
+          const enabled = this.status.filter((s) => s.app.enabled !== false);
+          const stopped = enabled.filter((s) =>
+            s.risk && s.risk.killswitch && s.risk.killswitch.active).length;
+          const paused = enabled.filter((s) => s.risk && s.risk.paused).length;
+          el.className = stopped ? "alert error" : (paused ? "alert warn" : "alert ok");
+          el.textContent = "已启用 " + enabled.length + " 个策略；停止 " +
+            stopped + " · 暂停 " + paused;
+          return;
+        }
+        const card = this.status.find((s) => this.keyOf(s) === selected);
         if (!card) { el.className = "alert warn"; el.textContent = "策略未运行"; return; }
         if (card.app.enabled === false) {
           el.className = "alert warn";
-          el.textContent = this.key + " 未启用：不会发现新市场或开仓。在上方「启用该策略」选「开启」并保存即可。";
+          el.textContent = selected + " 未启用：不会发现新市场或开仓。";
           return;
         }
-        const risk = card.risk;
+        const risk = card.risk || {};
         if (card.app.mode_fallback) {
           el.className = "alert warn";
-          el.textContent = this.key + " 实盘凭证缺失，已降级为纸面。配置 API_KEY/WALLET_PRIVATE_KEY 后可在上方切换。";
-          return;
-        }
-        if (risk.killswitch && risk.killswitch.active) {
+          el.textContent = selected + " 实盘凭证缺失，已降级为纸面。";
+        } else if (risk.killswitch && risk.killswitch.active) {
           el.className = "alert error";
-          el.textContent = this.key + " 已停止新开仓。" + (risk.killswitch.reason ? " 原因：" + risk.killswitch.reason : "");
+          el.textContent = selected + " 已停止新开仓。" +
+            (risk.killswitch.reason ? " 原因：" + risk.killswitch.reason : "");
         } else if (risk.paused) {
           el.className = "alert warn";
-          el.textContent = this.key + " 暂停中，至 " + fmt.clock(risk.pause_until);
+          el.textContent = selected + " 暂停中，至 " + fmt.clock(risk.pause_until);
         } else {
           el.className = "alert ok";
-          el.textContent = this.key + " 运行中：允许在信号出现时开仓。";
+          el.textContent = selected + " 运行中：允许在信号出现时开仓。";
         }
       } catch (err) {
         setText("#ctrl-state", "状态查询失败: " + err.message);

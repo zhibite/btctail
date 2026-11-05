@@ -24,6 +24,19 @@ from src.config import (
 
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 MODE_KEY = "TRADING_MODE"   # persisted per scope; not agent-tunable
+SHARED_SCOPE = "shared"     # execution / risk parameters common to all strategies
+SHARED_GROUPS = ("execution", "risk")
+SHARED_KEYS = tuple(
+    key for key, spec in TUNABLE_SPECS.items()
+    if spec.get("group") in SHARED_GROUPS
+)
+
+
+def _scope_of(runtime: Any) -> str:
+    return getattr(
+        runtime, "key",
+        strategy_key(runtime.settings.ASSET, runtime.settings.PERIOD),
+    )
 
 
 def coerce(key: str, raw: Any) -> Any:
@@ -66,6 +79,74 @@ def apply_overrides(settings: Settings, db, scope: str = "15m") -> Settings:
     # Research/backtest sizing follows the paper budget.
     settings.ENTRY_NOTIONAL_USD = float(settings.ENTRY_NOTIONAL_USD_PAPER)
     return settings
+
+
+def apply_shared_overrides(settings: Settings, db) -> Settings:
+    """Apply execution/risk overrides shared by every strategy."""
+    for key, raw in db.settings_all(SHARED_SCOPE).items():
+        if key not in SHARED_KEYS:
+            continue
+        try:
+            setattr(settings, key, coerce(key, raw))
+        except (TypeError, ValueError):
+            continue
+    return settings
+
+
+def shared_payload(settings: Settings, db) -> dict:
+    overrides = db.settings_all(SHARED_SCOPE)
+    return {
+        "scope": SHARED_SCOPE,
+        "values": {key: getattr(settings, key) for key in SHARED_KEYS},
+        "specs": {key: TUNABLE_SPECS[key] for key in SHARED_KEYS},
+        "overrides": {k: v for k, v in overrides.items() if k in SHARED_KEYS},
+        "errors": settings.validation_errors(),
+    }
+
+
+def update_shared(runtimes: dict[str, Any], db, values: dict[str, Any]
+                  ) -> tuple[bool, list[str], dict]:
+    """Validate + persist execution/risk parameters for every strategy."""
+    unknown = [key for key in values if key not in SHARED_KEYS]
+    if unknown:
+        return False, [f"不是共有参数: {', '.join(unknown)}"], {}
+
+    coerced: dict[str, Any] = {}
+    errors: list[str] = []
+    for key, raw in values.items():
+        try:
+            coerced[key] = coerce(key, raw)
+        except (TypeError, ValueError) as exc:
+            errors.append(str(exc))
+    if errors:
+        return False, errors, {}
+    if not coerced:
+        return True, [], {}
+
+    # Validate against every strategy: the shared order type interacts with
+    # each strategy's own entry price cap and live notional (5-share GTD
+    # minimum), so one invalid strategy must reject the whole change.
+    for key, runtime in runtimes.items():
+        if not bool(getattr(runtime.settings, "ENABLED", True)):
+            continue
+        candidate = runtime.settings.model_copy(deep=True)
+        for name, value in coerced.items():
+            setattr(candidate, name, value)
+        candidate.ENTRY_NOTIONAL_USD = float(candidate.ENTRY_NOTIONAL_USD_PAPER)
+        problems = candidate.validation_errors()
+        if problems:
+            return False, [f"{key}: {message}" for message in problems], {}
+
+    for runtime in runtimes.values():
+        for name, value in coerced.items():
+            setattr(runtime.settings, name, value)
+    db.settings_set_many({k: str(v) for k, v in coerced.items()},
+                         scope=SHARED_SCOPE)
+    # Remove stale per-strategy copies so the shared value is the only
+    # source of truth after a restart.
+    for runtime in runtimes.values():
+        db.settings_delete(list(coerced.keys()), scope=_scope_of(runtime))
+    return True, [], coerced
 
 
 def update(settings: Settings, db, scope: str, values: dict[str, Any]
@@ -125,6 +206,8 @@ def reset(settings: Settings, db, scope: str) -> Settings:
             continue
     settings.TRADING_MODE = mode
     settings.ENABLED = enabled
+    # Common execution/risk values are not per-strategy overrides.
+    apply_shared_overrides(settings, db)
     return settings
 
 

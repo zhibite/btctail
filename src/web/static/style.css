@@ -187,7 +187,7 @@ a:hover { text-decoration: underline; }
 .grid.cols-2 { grid-template-columns: 1.35fr 1fr; }
 .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
 .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
-.strategy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.strategy-grid { grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 12px; }
 
 .card {
   position: relative;
@@ -522,6 +522,84 @@ label.field > span.help {
 }
 .strategy-card .side-price { font-size: 26px; }
 .side .side-bar { height: 4px; border-radius: 99px; background: var(--surface-3); margin-top: 10px; overflow: hidden; }
+
+/* ── compact dashboard cards (14 strategies) ───────────────────────── */
+.compact-card { padding: 14px 15px; }
+.compact-card .card-head { margin-bottom: 8px; gap: 8px; }
+.compact-card .card-title.plain { font-size: 13.5px; }
+.compact-card .btn-row { gap: 6px; }
+.compact-card.is-disabled { opacity: 0.62; }
+.compact-card.is-disabled:hover { opacity: 0.78; }
+.compact-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+.compact-card .countdown { font-size: 26px; letter-spacing: -1.1px; }
+.compact-card .countdown small { font-size: 10px; margin-left: 5px; vertical-align: 1px; }
+.compact-card .progress { height: 4px; margin-top: 8px; }
+.compact-prices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.price-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+.price-chip span { font-size: 10px; color: var(--muted); letter-spacing: 0.5px; }
+.price-chip b { font-family: var(--mono); font-size: 18px; font-weight: 650; letter-spacing: -0.4px; }
+.price-chip.up b { color: var(--up); }
+.price-chip.down b { color: var(--down); }
+.price-chip.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim); }
+.compact-market {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--faint);
+  min-width: 0;
+}
+.compact-market .slug { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 0;
+}
+.compact-meta span { white-space: nowrap; }
+.compact-meta b { color: var(--text); font-weight: 550; font-family: var(--mono); }
+.compact-note {
+  margin-top: 7px;
+  font-size: 10.5px;
+  color: var(--warn);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compact-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+}
+.compact-stat span {
+  display: block;
+  font-size: 9.5px;
+  color: var(--faint);
+  letter-spacing: 0.4px;
+}
+.compact-stat b {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+}
 .side .side-bar > i { display: block; height: 100%; border-radius: 99px; transition: width 0.3s ease; }
 .side.up .side-bar > i { background: var(--up); }
 .side.down .side-bar > i { background: var(--down); }
@@ -576,6 +654,22 @@ table.data td.num, table.data th.num,
   text-align: right;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+}
+.config-table td { vertical-align: middle; }
+.config-table input[type="number"] {
+  width: 92px;
+  min-height: 34px;
+  padding: 6px 8px;
+}
+.config-table select {
+  width: 84px;
+  min-height: 34px;
+  padding: 6px 8px;
+}
+.config-table input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
 }
 
 /* ── log ────────────────────────────────────────────────────────────── */
@@ -752,7 +846,6 @@ table.data td.num, table.data th.num,
 
 @media (max-width: 1180px) {
   .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; }
-  .strategy-grid { grid-template-columns: 1fr; }
   .stats.compact { grid-template-columns: repeat(4, 1fr); }
 }
 
