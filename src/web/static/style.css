@@ -600,6 +600,75 @@ label.field > span.help {
   font-size: 13px;
   font-weight: 600;
 }
+
+/* ── dashboard strategy list ────────────────────────────────────────── */
+.strategy-list { font-size: 12px; }
+.strategy-list td { padding: 7px 10px; vertical-align: middle; }
+.strategy-list tr.is-disabled { opacity: 0.55; }
+.strategy-list .strategy-name {
+  font-weight: 650;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.strategy-list .strategy-slug {
+  max-width: 210px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--faint);
+}
+.strategy-list .param-line {
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.strategy-list .param-line b {
+  color: var(--text);
+  font-family: var(--mono);
+  font-weight: 550;
+}
+.strategy-list .mono.active { font-weight: 750; }
+.strategy-list td.num { font-variant-numeric: tabular-nums; }
+
+/* ── shared window countdowns ───────────────────────────────────────── */
+.shared-windows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+.shared-window-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.shared-countdown {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 650;
+  letter-spacing: -1.4px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.shared-countdown small {
+  margin-left: 8px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 450;
+  letter-spacing: 0;
+  color: var(--faint);
+}
+.shared-window .progress { margin-top: 8px; }
+
+@media (max-width: 760px) {
+  .shared-windows { grid-template-columns: 1fr; gap: 14px; }
+  .shared-countdown { font-size: 26px; }
+}
 .side .side-bar > i { display: block; height: 100%; border-radius: 99px; transition: width 0.3s ease; }
 .side.up .side-bar > i { background: var(--up); }
 .side.down .side-bar > i { background: var(--down); }

@@ -364,7 +364,9 @@ def test_pages_render(client):
             assert "共有参数" in page.text
             assert "关于这些参数" not in page.text
         if path == "/":
-            assert 'id="strategy-grid"' in page.text
+            assert 'id="strategy-list"' in page.text
+            assert 'id="window-15m-remaining"' in page.text
+            assert 'id="window-5m-remaining"' in page.text
             assert "策略说明" not in page.text
 
 

@@ -39,8 +39,35 @@
       <div class="stat"><div class="k">持仓 / 胜率</div><div class="v" id="ov-open">--</div><div class="s">胜率 <span id="ov-winrate">--</span></div></div>
     </div>
 
-    <div class="grid strategy-grid" id="strategy-grid" style="margin-top:16px">
-      <div class="card"><div class="muted small">等待状态…</div></div>
+    <div class="card tight" style="margin-top:16px">
+      <div class="shared-windows">
+        <div class="shared-window">
+          <div class="shared-window-head">
+            <span class="card-title plain">15m 窗口</span>
+            <span class="small muted" id="window-15m-end">--</span>
+          </div>
+          <div class="shared-countdown"><span id="window-15m-remaining">--</span><small>距结算</small></div>
+          <div class="progress"><i id="window-15m-bar" style="width:0%"></i></div>
+        </div>
+        <div class="shared-window">
+          <div class="shared-window-head">
+            <span class="card-title plain">5m 窗口</span>
+            <span class="small muted" id="window-5m-end">--</span>
+          </div>
+          <div class="shared-countdown"><span id="window-5m-remaining">--</span><small>距结算</small></div>
+          <div class="progress"><i id="window-5m-bar" style="width:0%"></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div class="card-title">策略状态</div>
+        <span class="small muted" id="strategy-count">--</span>
+      </div>
+      <div class="table-wrap" id="strategy-list">
+        <div class="muted small center" style="padding:20px">等待状态…</div>
+      </div>
     </div>
 
     <div class="card" style="margin-top:16px">

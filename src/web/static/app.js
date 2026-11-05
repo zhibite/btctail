@@ -314,6 +314,28 @@
       return app.key || (app.asset + ":" + app.period);
     },
 
+    keyOf(s) {
+      const app = s.app || {};
+      return app.key || (app.asset + ":" + app.period);
+    },
+
+    renderWindows(all) {
+      [["15m", 900], ["5m", 300]].forEach(([period, span]) => {
+        const sample = all.find((s) => s.app.period === period && s.window);
+        const win = sample ? sample.window : null;
+        setText("#window-" + period + "-remaining",
+          win ? fmt.duration(win.remaining_s) : "--");
+        setText("#window-" + period + "-end",
+          win ? "结算 " + fmt.clock(win.end_ts) : "--");
+        const bar = document.getElementById("window-" + period + "-bar");
+        if (bar) {
+          const pct = win
+            ? Math.max(0, Math.min(100, (win.remaining_s / span) * 100)) : 0;
+          bar.style.width = pct + "%";
+        }
+      });
+    },
+
     render(data) {
       const all = data.strategies || [];
       const enabled = all.filter((s) => s.app.enabled !== false);
@@ -332,15 +354,26 @@
       setText("#ov-roi", totals.cost ? fmt.pct(totals.pnl / totals.cost) : "--");
       setText("#ov-open", fmt.int(totals.open));
       setText("#ov-winrate", totals.trades ? fmt.pct(totals.wins / totals.trades) : "--");
+      setText("#strategy-count", all.length + " 个策略 · " + enabled.length + " 个已启用");
+      this.renderWindows(all);
 
-      const grid = $("#strategy-grid");
-      grid.innerHTML = all.length
-        ? all.map((s) => this.card(s)).join("")
-        : '<div class="card"><div class="muted small center" style="padding:24px">没有策略</div></div>';
-      $$("[data-act]", grid).forEach((btn) => {
-        btn.addEventListener("click", () => this.control(
-          btn.getAttribute("data-act"), btn.getAttribute("data-key")));
-      });
+      const list = $("#strategy-list");
+      if (!all.length) {
+        list.innerHTML = "<div class='muted small center' style='padding:20px'>没有策略</div>";
+      } else {
+        const head = "<table class='strategy-list'><thead><tr>" +
+          "<th>策略</th><th>状态</th><th>阶段</th>" +
+          "<th class='num'>UP</th><th class='num'>DOWN</th>" +
+          "<th>参数</th><th>触发 / 持仓</th>" +
+          "<th class='num'>交易</th><th class='num'>胜率</th>" +
+          "<th class='num'>净收益</th><th class='num'>ROI</th><th></th>" +
+          "</tr></thead><tbody>";
+        list.innerHTML = head + all.map((s) => this.row(s)).join("") + "</tbody></table>";
+        $$("[data-act]", list).forEach((btn) => {
+          btn.addEventListener("click", () => this.control(
+            btn.getAttribute("data-act"), btn.getAttribute("data-key")));
+        });
+      }
 
       const merged = [];
       enabled.forEach((s) => (s.recent_signals || []).forEach((sig) => merged.push(sig)));
@@ -348,7 +381,7 @@
       $("#signals-all").innerHTML = renderSignalsTable(merged.slice(0, 12), true);
     },
 
-    card(s) {
+    row(s) {
       const app = s.app || {};
       const win = s.window;
       const st = s.strategy;
@@ -363,100 +396,77 @@
       const modeBadge = isPaper
         ? '<span class="badge blue">纸面</span>'
         : '<span class="badge red">实盘</span>';
-      let statusBadge = enabled
-        ? '<span class="badge green"><span class="dot pulse"></span>运行</span>'
-        : '<span class="badge gray">未启用</span>';
-      let action = enabled
-        ? '<button class="btn small ghost" data-act="killswitch" data-key="' +
-          fmt.esc(key) + '">停止</button>'
-        : '<a class="btn small ghost" href="/config">开启</a>';
-      if (enabled && app.mode_fallback) {
+
+      let statusBadge = '<span class="badge green"><span class="dot pulse"></span>运行</span>';
+      let action = '<button class="btn small ghost" data-act="killswitch" data-key="' +
+        fmt.esc(key) + '">停止</button>';
+      if (!enabled) {
+        statusBadge = '<span class="badge gray">未启用</span>';
+        action = '<a class="btn small ghost" href="/config">开启</a>';
+      } else if (app.mode_fallback) {
         statusBadge = '<span class="badge amber">凭证缺失</span>';
-      }
-      if (enabled && risk.killswitch && risk.killswitch.active) {
+      } else if (risk.killswitch && risk.killswitch.active) {
         statusBadge = '<span class="badge red">已停止</span>';
         action = '<button class="btn small ghost" data-act="release" data-key="' +
           fmt.esc(key) + '">恢复</button>';
-      } else if (enabled && risk.paused) {
+      } else if (risk.paused) {
         statusBadge = '<span class="badge amber">暂停中</span>';
         action = '<button class="btn small ghost" data-act="resume" data-key="' +
           fmt.esc(key) + '">恢复</button>';
       }
 
-      const remaining = win ? win.remaining_s : 0;
-      const periodS = period === "5m" ? 300 : 900;
-      const pct = win ? Math.max(0, Math.min(100, (remaining / periodS) * 100)) : 0;
       const up = q ? q.up_mid : null;
       const down = q ? q.down_mid : null;
       const activeSide = st && st.trigger_side;
-      const open = (s.recent_trades || []).filter((t) => t.status === "open");
-      const trade = open[0];
-      const triggerText = st && st.trigger_side
-        ? st.trigger_side + " @" + fmt.price(st.trigger_price)
-        : "--";
-      const confirmText = st && st.confirm_in_s !== null && st.confirm_in_s !== undefined
-        ? fmt.duration(st.confirm_in_s) + " 后确认" : "";
-      const positionText = trade
-        ? trade.side + " @" + fmt.price(trade.entry_price) : "空仓";
-      const pnlText = trade
-        ? fmt.money(trade.shares - trade.cost - trade.fee, true) + " / " +
-          fmt.money(-trade.cost - trade.fee)
-        : "";
-      const note = win && win.discovery_error
-        ? "发现失败: " + win.discovery_error : ((st && st.skip_reason) || "");
-      const phaseLabel = win
+      const trade = (s.recent_trades || []).find((t) => t.status === "open");
+      const phase = win
         ? (PHASE_LABEL[win.phase] || win.phase || "--")
         : (enabled ? "等待窗口" : "未启用");
-      const marketText = win && win.market
-        ? win.market.slug : (enabled ? "等待市场发现…" : "未启用");
+      const market = win && win.market
+        ? win.market.slug : (enabled ? "等待市场" : "—");
+      const samples = win ? " · " + fmt.int(win.samples) + " 采样" : "";
       const sec = (value) => value === null || value === undefined
         ? "--" : Math.round(Number(value)) + "s";
+      const trigger = st && st.trigger_side
+        ? st.trigger_side + " @" + fmt.price(st.trigger_price) : "--";
+      const confirm = st && st.confirm_in_s !== null && st.confirm_in_s !== undefined
+        ? " · " + fmt.duration(st.confirm_in_s) + " 后确认" : "";
+      const position = trade
+        ? trade.side + " @" + fmt.price(trade.entry_price) : "空仓";
+      const expect = trade
+        ? " · 若胜 " + fmt.money(trade.shares - trade.cost - trade.fee, true) +
+          " / 若负 " + fmt.money(-trade.cost - trade.fee)
+        : "";
       const amount = params.entry_notional_usd === undefined
         ? "--" : params.entry_notional_usd;
 
-      return '' +
-        '<div class="card strategy-card compact-card' + (enabled ? "" : " is-disabled") + '">' +
-          '<div class="card-head">' +
-            '<div class="card-title plain">' + fmt.esc(app.asset) + " " +
-              fmt.esc(period) + " " + modeBadge + "</div>" +
-            '<div class="btn-row">' + statusBadge + action + "</div>" +
-          "</div>" +
-          '<div class="compact-top">' +
-            '<div class="countdown">' + (win ? fmt.duration(win.remaining_s) : "--") +
-              "<small>距结算</small></div>" +
-            '<span class="badge gray">' + fmt.esc(phaseLabel) + "</span>" +
-          "</div>" +
-          '<div class="progress"><i style="width:' + pct + '%"></i></div>' +
-          '<div class="compact-prices">' +
-            '<div class="price-chip up' + (activeSide === "UP" ? " active" : "") +
-              '"><span>UP</span><b>' + fmt.price(up) + "</b></div>" +
-            '<div class="price-chip down' + (activeSide === "DOWN" ? " active" : "") +
-              '"><span>DOWN</span><b>' + fmt.price(down) + "</b></div>" +
-          "</div>" +
-          '<div class="compact-market"><span class="slug mono">' +
-            fmt.esc(marketText) + "</span><span>" +
-            (win ? fmt.int(win.samples) + " 采样" : "") + "</span></div>" +
-          '<div class="compact-meta">' +
-            "<span>阈值 <b>" + fmt.price(params.threshold, 2) + "</b></span>" +
-            "<span>上限 <b>" + fmt.price(params.max_entry_price, 2) + "</b></span>" +
-            "<span>窗口 <b>" + sec(params.entry_window_sec) + "</b></span>" +
-            "<span>确认 <b>" + sec(params.confirm_sec) + "</b></span>" +
-            "<span>金额 <b>" + amount + "U</b></span>" +
-          "</div>" +
-          '<div class="compact-meta">' +
-            "<span>触发 <b>" + fmt.esc(triggerText) + "</b>" +
-              (confirmText ? " · " + confirmText : "") + "</span>" +
-            "<span>持仓 <b>" + fmt.esc(positionText) + "</b></span>" +
-            (trade ? "<span>若胜/负 <b>" + pnlText + "</b></span>" : "") +
-          "</div>" +
-          (note ? '<div class="compact-note">' + fmt.esc(note) + "</div>" : "") +
-          '<div class="compact-stats">' +
-            compactStat("交易", fmt.int(stats.trades)) +
-            compactStat("胜率", fmt.pct(stats.win_rate)) +
-            compactStat("净收益", fmt.money(stats.pnl, true), fmt.cls(stats.pnl)) +
-            compactStat("ROI", fmt.pct(stats.roi), fmt.cls(stats.roi)) +
-          "</div>" +
-        "</div>";
+      return "<tr class='" + (enabled ? "" : "is-disabled") + "'>" +
+        "<td><div class='strategy-name'>" + fmt.esc(app.asset) + " " +
+          fmt.esc(period) + " " + modeBadge + "</div>" +
+          "<div class='strategy-slug mono'>" + fmt.esc(market) + samples + "</div></td>" +
+        "<td>" + statusBadge + "</td>" +
+        "<td><span class='badge gray'>" + fmt.esc(phase) + "</span></td>" +
+        "<td class='num'><span class='mono pos" +
+          (activeSide === "UP" ? " active" : "") + "'>" + fmt.price(up) + "</span></td>" +
+        "<td class='num'><span class='mono neg" +
+          (activeSide === "DOWN" ? " active" : "") + "'>" + fmt.price(down) + "</span></td>" +
+        "<td><div class='param-line'>阈 <b>" + fmt.price(params.threshold, 2) +
+          "</b> · 限 <b>" + fmt.price(params.max_entry_price, 2) +
+          "</b> · 窗 <b>" + sec(params.entry_window_sec) + "</b></div>" +
+          "<div class='param-line'>确认 <b>" + sec(params.confirm_sec) +
+          "</b> · 金额 <b>" + amount + "U</b></div></td>" +
+        "<td><div class='param-line'>触发 <b>" + fmt.esc(trigger) + "</b>" +
+          confirm + "</div>" +
+          "<div class='param-line'>持仓 <b>" + fmt.esc(position) + "</b>" +
+          expect + "</div></td>" +
+        "<td class='num'>" + fmt.int(stats.trades) + "</td>" +
+        "<td class='num'>" + fmt.pct(stats.win_rate) + "</td>" +
+        "<td class='num " + fmt.cls(stats.pnl) + "'>" +
+          fmt.money(stats.pnl, true) + "</td>" +
+        "<td class='num " + fmt.cls(stats.roi) + "'>" +
+          fmt.pct(stats.roi) + "</td>" +
+        "<td>" + action + "</td>" +
+        "</tr>";
     },
   };
 
