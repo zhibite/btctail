@@ -81,6 +81,8 @@ class PolymarketClient:
         self.gamma_api = gamma_api.rstrip("/")
         self.clob_host = clob_host.rstrip("/")
         self._http: Optional[httpx.AsyncClient] = None
+        self._failures = 0
+        self._reset_lock = asyncio.Lock()
         self._resolution_cache: dict[str, tuple[float, dict]] = {}
         self._fee_cache: dict[str, tuple[float, float]] = {}
 
@@ -92,6 +94,26 @@ class PolymarketClient:
                 headers={"User-Agent": "polytail-btc15/0.1"},
             )
         return self._http
+
+    async def reset_http(self) -> None:
+        """Drop the shared client after repeated failures.
+
+        A single ``httpx.AsyncClient`` is reused by both strategies. If its
+        connection pool gets wedged (observed after ~12 h in production),
+        every later request hangs and the bot silently stops discovering
+        markets. Rebuilding the client is the only reliable recovery short
+        of a process restart.
+        """
+        async with self._reset_lock:
+            client = self._http
+            self._http = None
+            self._failures = 0
+            if client is not None and not client.is_closed:
+                try:
+                    await client.aclose()
+                except Exception:  # noqa: BLE001 - close must never raise
+                    pass
+            log.warning("market.http_client_reset")
 
     async def close(self) -> None:
         if self._http is not None and not self._http.is_closed:
@@ -111,12 +133,20 @@ class PolymarketClient:
                     raise httpx.HTTPStatusError(
                         f"HTTP {resp.status_code}", request=resp.request, response=resp
                     )
+                self._failures = 0
                 return resp.json()
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 if attempt < retries:
                     # Keep this short: discovery runs inside the trading loop.
                     await asyncio.sleep(0.15 * (attempt + 1))
+        if not isinstance(last_exc, httpx.HTTPStatusError):
+            # Timeouts/transport errors are the signature of a wedged pool;
+            # three in a row means a restart of the client is cheaper than
+            # letting every strategy stay blind.
+            self._failures += 1
+            if self._failures >= 3:
+                await self.reset_http()
         raise RuntimeError(f"GET {url} failed: {last_exc}") from last_exc
 
     # ── Discovery ─────────────────────────────────────────────────────────
@@ -125,7 +155,7 @@ class PolymarketClient:
         """All markets inside the Gamma event with this slug (usually 1)."""
         try:
             data = await self._get(f"{self.gamma_api}/events", {"slug": slug},
-                                   timeout=6.0, retries=1)
+                                   timeout=4.0, retries=0)
         except Exception as exc:  # noqa: BLE001
             log.debug("gamma.events_failed", slug=slug, error=str(exc))
             return []
@@ -225,7 +255,7 @@ class PolymarketClient:
             return None
         try:
             data = await self._get(
-                f"{self.clob_host}/midpoint", {"token_id": token_id}, timeout=3.0, retries=0
+                f"{self.clob_host}/midpoint", {"token_id": token_id}, timeout=2.0, retries=0
             )
             value = float(data.get("mid"))
             return value if 0.0 < value < 1.0 else None
@@ -250,8 +280,8 @@ class PolymarketClient:
             data = await self._get(
                 f"{self.clob_host}/last-trades-prices",
                 {"token_ids": ",".join(token_ids)},
-                timeout=4.0,
-                retries=1,
+                timeout=3.0,
+                retries=0,
             )
         except Exception:  # noqa: BLE001
             return {}
@@ -280,7 +310,7 @@ class PolymarketClient:
     async def get_order_book(self, token_id: str) -> Optional[OrderBook]:
         try:
             data = await self._get(
-                f"{self.clob_host}/book", {"token_id": token_id}, timeout=4.0, retries=1
+                f"{self.clob_host}/book", {"token_id": token_id}, timeout=2.0, retries=0
             )
         except Exception:  # noqa: BLE001
             return None
@@ -318,7 +348,7 @@ class PolymarketClient:
     async def get_tick_size(self, token_id: str) -> float:
         try:
             data = await self._get(
-                f"{self.clob_host}/tick-size", {"token_id": token_id}, timeout=4.0, retries=0
+                f"{self.clob_host}/tick-size", {"token_id": token_id}, timeout=2.0, retries=0
             )
             value = float(data.get("minimum_tick_size") or 0.01)
             return value if value > 0 else 0.01

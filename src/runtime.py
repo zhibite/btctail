@@ -290,7 +290,7 @@ class Runtime:
                 self.market_svc.discover(
                     self.settings.ASSET, self.settings.PERIOD, aw.slot, force=True
                 ),
-                timeout=8.0,
+                timeout=10.0,
             )
         except asyncio.TimeoutError:
             aw.discovery_error = "discovery timeout"
@@ -306,6 +306,11 @@ class Runtime:
                             attempts=aw.discovery_failures,
                             error=aw.discovery_error or "market not listed yet",
                             remaining=fmt_duration(aw.end_ts - self._now()))
+            # A successful balance/CLOB call can reset the failure counter
+            # inside the HTTP client even when Gamma itself is wedged, so
+            # also rebuild the client after a long run of discovery misses.
+            if aw.discovery_failures % 20 == 0:
+                await self.pm.reset_http()
             return
         if self.active is not aw:
             # The window rolled over while Gamma was answering. Applying this
@@ -348,7 +353,7 @@ class Runtime:
 
         try:
             quote = await asyncio.wait_for(
-                self.market_svc.fetch_quote(aw.market), timeout=4.0
+                self.market_svc.fetch_quote(aw.market), timeout=6.0
             )
         except asyncio.TimeoutError:
             log.warning("market.quote_timeout", slot=aw.slot)
@@ -407,7 +412,7 @@ class Runtime:
         # up to one poll interval old and the last seconds are volatile.
         try:
             fresh = await asyncio.wait_for(
-                self.market_svc.fetch_quote(market, with_books=True), timeout=4.0
+                self.market_svc.fetch_quote(market, with_books=True), timeout=6.0
             )
         except asyncio.TimeoutError:
             log.warning("exec.quote_refresh_timeout", slot=aw.slot,
@@ -730,7 +735,7 @@ class Runtime:
             if self.broker.mode == "paper":
                 try:
                     quote = await asyncio.wait_for(
-                        self.market_svc.fetch_quote(market), timeout=2.0
+                        self.market_svc.fetch_quote(market), timeout=6.0
                     )
                 except Exception:  # noqa: BLE001
                     quote = None
