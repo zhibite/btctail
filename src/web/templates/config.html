@@ -11,10 +11,11 @@
 <body data-page="config">
   <div class="topbar">
     <div class="topbar-inner">
-      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>BTC 尾盘</small></span></div>
+      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>多币种尾盘</small></span></div>
       {{NAV}}
       <div class="topbar-right">
         <span class="badge gray" id="cfg-mode">--</span>
+        <span class="badge gray" id="cfg-enabled">--</span>
         <span class="badge gray" id="cfg-asset">--</span>
         <span id="clock" class="mono small muted"></span>
       </div>
@@ -24,16 +25,40 @@
   <div class="layout">
     <div class="page-head">
       <div>
-        <h1>参数与风控 <span class="badge blue" id="cfg-scope">15m</span></h1>
-        <p>每个策略独立配置；保存后写入数据库，<b>下一个窗口</b>生效。15m 默认文档推荐参数，5m 默认纸面并由 Agent 调优。</p>
+        <h1>参数与风控 <span class="badge blue" id="cfg-scope">BTC:15m</span></h1>
+        <p>7 个币 × 15m / 5m 共 14 个策略独立配置；保存后写入数据库，<b>下一个窗口</b>生效。默认只启用 BTC 15m / 5m，全部纸面；纸面默认 10U/笔，实盘默认 5U/笔。</p>
       </div>
       <div class="btn-row">
-        <div class="segmented" role="group" aria-label="策略">
-          <button class="active" data-strategy="15m">BTC 15m</button>
-          <button data-strategy="5m">BTC 5m</button>
-        </div>
+        <button class="btn small" id="cfg-recommended">填入文档推荐</button>
         <button class="btn small" id="cfg-reset">恢复默认</button>
       </div>
+    </div>
+
+    <div class="card tight" style="margin-bottom:16px">
+      <div class="mode-bar" style="flex-wrap:wrap">
+        <span class="card-title plain">选择策略</span>
+        <div class="segmented" role="group" aria-label="币种" id="cfg-assets">
+          <button class="active" data-asset="BTC">BTC</button>
+          <button data-asset="ETH">ETH</button>
+          <button data-asset="SOL">SOL</button>
+          <button data-asset="XRP">XRP</button>
+          <button data-asset="DOGE">DOGE</button>
+          <button data-asset="BNB">BNB</button>
+          <button data-asset="HYPE">HYPE</button>
+        </div>
+        <div class="segmented" role="group" aria-label="周期" id="cfg-periods">
+          <button class="active" data-cfg-period="15m">15m</button>
+          <button data-cfg-period="5m">5m</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card tight" style="margin-bottom:16px">
+      <div class="card-head">
+        <div class="card-title">策略开关</div>
+        <span class="small muted">点按即保存；未启用的策略不会发现市场或开仓，已有持仓仍会结算。</span>
+      </div>
+      <div class="table-wrap" id="strategy-matrix"></div>
     </div>
 
     <div id="cfg-errors" class="hidden"></div>
@@ -46,7 +71,7 @@
           <option value="live">实盘（真实资金）</option>
         </select>
         <button class="btn small" id="mode-apply">切换</button>
-        <span class="small muted" id="mode-note">切换在下一个窗口生效；有未结算持仓时会被拒绝。</span>
+        <span class="small muted" id="mode-note">切换在下一个窗口生效；有未结算持仓时会被拒绝。当前全部默认纸面。</span>
       </div>
     </div>
 
@@ -67,7 +92,7 @@
       </div>
       <div class="form-actions">
         <button type="submit" class="btn primary">保存参数</button>
-        <span class="small muted">15m 的推荐参数可改，但改前请先用「研究 / Agent」页验证；5m 适合持续调优。</span>
+        <span class="small muted">推荐参数来自 docs 回测（稳健版）；改动前建议先纸面观察。研究 / Agent 页目前只覆盖 BTC。</span>
       </div>
     </form>
 
@@ -89,7 +114,7 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><div class="card-title">钱包（两策略共享）</div></div>
+        <div class="card-head"><div class="card-title">钱包（所有策略共享）</div></div>
         <div class="kv">
           <div class="k">模式</div><div class="v" id="wallet-mode">--</div>
           <div class="k">可用余额</div><div class="v" id="wallet-balance">--</div>
@@ -106,14 +131,17 @@
       <div class="card-head"><div class="card-title">关于这些参数</div></div>
       <div class="md">
         <ul>
-          <li><b>入场窗口</b>：15m 用 60 秒；5m 只有 300 秒，默认只看最后 20 秒（文档中 5m 最强的只是最后 10–20 秒的时间子集）。</li>
-          <li><b>触发阈值</b>：0.90。提高会减少交易、抬高胜率，也会抬高入场价。</li>
-          <li><b>确认秒数</b>：15m 用 10 秒过滤假突破；5m 默认 0，因为窗口太短，等待会错过结算前的最佳价格。</li>
-          <li><b>入场价上限</b>：15m 用 0.94（0.94–0.95 档价差偏弱）；5m 用 0.92（文档的最佳简单版本）。</li>
-          <li><b>下单方式</b>：默认 <b>GTD</b>——在信号价挂限价买单（maker，费率 0），等待成交；
-            未成交则按配置回退 FAK 吃单。<b>单笔金额</b>按 USDC 设置（15m 默认 10U），GTD 会按限价自动换算成股数，并保证不少于 5 股。</li>
-          <li><b>执行滑点</b>：FAK 限价 = 信号价 + 该值。若盘口卖价高于限价，FAK 会直接放弃而不是发一张必然不成交的单。</li>
+          <li><b>启用策略</b>：「启用该策略」关闭后不再发现新市场或开仓，已有持仓仍会结算。默认只启用 BTC 15m / 5m。</li>
+          <li><b>文档推荐</b>（稳健版，窗口 / 阈值 / 确认 / 上限）：BTC 15m 60/0.94/15/0.96 · BTC 5m 10/0.88/0/0.90 ·
+            ETH 15m 45/0.84/10/0.92 · ETH 5m 15/0.90/0/0.93 · SOL 15m 45/0.84/0/0.93 · SOL 5m 20/0.84/0/0.95 ·
+            BNB 15m 60/0.84/0/0.96 · BNB 5m 10/0.84/1/0.95 · DOGE 15m 60/0.86/10/0.95 · DOGE 5m 25/0.84/2/0.98 ·
+            HYPE 15m 105/0.88/10/0.97 · HYPE 5m 15/0.90/0/0.93。XRP 暂无回测文档，先用保守通用参数。</li>
+          <li><b>单笔金额</b>：纸面默认 10 USDC、实盘默认 5 USDC，每个策略可分别设置；
+            切换交易模式后会立刻使用对应金额。GTD 会按限价换算成股数，并保证不少于 5 股。</li>
+          <li><b>交易模式</b>：每个币种 × 周期都可以单独选择纸面或实盘，保存后重启仍生效。</li>
+          <li><b>下单方式</b>：默认 <b>GTD</b>——在信号价挂限价买单（maker，费率 0），未成交再回退 FAK。</li>
           <li><b>官方费率</b>：fee = 份额 × 费率 × p × (1−p)，默认 0.07。</li>
+          <li><b>风控</b>：日亏损、连亏、暂停都按「币种 + 周期」独立计数，纸面与实盘也不会互相影响。</li>
         </ul>
       </div>
     </div>

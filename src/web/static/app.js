@@ -243,7 +243,8 @@
       "<th class='num'>成本</th><th class='num'>盈亏</th><th>状态</th></tr></thead><tbody>" +
       trades.map((t) =>
         "<tr>" +
-        (options.showPeriod ? "<td><span class='badge gray'>" + fmt.esc(t.period) + "</span></td>" : "") +
+        (options.showPeriod ? "<td><span class='badge gray'>" +
+          fmt.esc((t.asset || "BTC") + " " + t.period) + "</span></td>" : "") +
         "<td class='mono'>" + fmt.date(t.entry_ts) + "</td>" +
         "<td><span class='tag " + (t.side === "UP" ? "enter" : "lost") + "'>" + t.side + "</span></td>" +
         "<td class='num'>" + fmt.price(t.entry_price) + "</td>" +
@@ -254,14 +255,15 @@
       ).join("") + "</tbody></table>";
   }
 
-  function renderSignalsTable(signals, showPeriod) {
+  function renderSignalsTable(signals, showStrategy) {
     if (!signals.length) return '<div class="muted small center" style="padding:18px">暂无信号</div>';
     return "<table><thead><tr>" +
-      (showPeriod ? "<th>策略</th>" : "") +
+      (showStrategy ? "<th>策略</th>" : "") +
       "<th>时间</th><th>方向</th><th class='num'>触发价</th><th class='num'>确认价</th><th>结果</th></tr></thead><tbody>" +
       signals.map((s) =>
         "<tr>" +
-        (showPeriod ? "<td><span class='badge gray'>" + fmt.esc(s.period) + "</span></td>" : "") +
+        (showStrategy ? "<td><span class='badge gray'>" +
+          fmt.esc((s.asset || "BTC") + " " + s.period) + "</span></td>" : "") +
         "<td class='mono'>" + fmt.date(s.created_at) + "</td>" +
         "<td>" + (s.side || "--") + "</td>" +
         "<td class='num'>" + fmt.price(s.trigger_price) + "</td>" +
@@ -303,7 +305,8 @@
       }
     },
     render(data) {
-      const strategies = data.strategies || [];
+      const strategies = (data.strategies || [])
+        .filter((s) => s.app.enabled !== false);
       const totals = { trades: 0, pnl: 0, cost: 0, wins: 0, open: 0 };
       strategies.forEach((s) => {
         const st = s.stats || {};
@@ -321,15 +324,17 @@
       setText("#ov-winrate", totals.trades ? fmt.pct(totals.wins / totals.trades) : "--");
 
       const grid = $("#strategy-grid");
-      grid.innerHTML = strategies.map((s) => this.card(s)).join("");
+      grid.innerHTML = strategies.length
+        ? strategies.map((s) => this.card(s)).join("")
+        : '<div class="card"><div class="muted small center" style="padding:24px">没有已启用的策略。到「参数」页开启币种与周期。</div></div>';
       strategies.forEach((s) => {
-        const period = s.app.period;
-        const chart = document.getElementById("equity-" + period);
+        const key = s.app.key || (s.app.asset + ":" + s.app.period);
+        const chart = document.getElementById("equity-" + key);
         if (chart) sparkline(chart, (s.equity || []).map((p) => ({ value: p.cumulative })), { height: 150 });
-        const stopBtn = document.querySelector("[data-stop='" + period + "']");
-        if (stopBtn) stopBtn.addEventListener("click", () => this.control("killswitch", period));
-        const releaseBtn = document.querySelector("[data-release='" + period + "']");
-        if (releaseBtn) releaseBtn.addEventListener("click", () => this.control("release", period));
+        const stopBtn = document.querySelector("[data-stop='" + key + "']");
+        if (stopBtn) stopBtn.addEventListener("click", () => this.control("killswitch", key));
+        const releaseBtn = document.querySelector("[data-release='" + key + "']");
+        if (releaseBtn) releaseBtn.addEventListener("click", () => this.control("release", key));
       });
 
       // merged recent signals
@@ -347,6 +352,7 @@
       const stats = s.stats;
       const params = Object.assign({}, s.params || {}, (st && st.params) || {});
       const period = app.period;
+      const key = app.key || (app.asset + ":" + period);
       const modeBadge = app.paper
         ? '<span class="badge blue">纸面</span>'
         : '<span class="badge red">实盘</span>';
@@ -380,10 +386,11 @@
       return '' +
         '<div class="card strategy-card">' +
           '<div class="card-head">' +
-            '<div class="card-title plain">BTC ' + fmt.esc(period) + " " + modeBadge + "</div>" +
+            '<div class="card-title plain">' + fmt.esc(app.asset) + " " +
+              fmt.esc(period) + " " + modeBadge + "</div>" +
             '<div class="btn-row">' + statusBadge +
-              '<button class="btn small ghost" data-stop="' + period + '">停止</button>' +
-              '<button class="btn small ghost" data-release="' + period + '">恢复</button>' +
+              '<button class="btn small ghost" data-stop="' + fmt.esc(key) + '">停止</button>' +
+              '<button class="btn small ghost" data-release="' + fmt.esc(key) + '">恢复</button>' +
             "</div>" +
           "</div>" +
           '<div class="window-top">' +
@@ -441,7 +448,7 @@
             statTile(null, "t 值", stats.t_stat === null || stats.t_stat === undefined ? "--" : Number(stats.t_stat).toFixed(2), "", "") +
           "</div>" +
           '<div class="hr"></div>' +
-          '<svg class="chart" id="equity-' + period + '"></svg>' +
+          '<svg class="chart" id="equity-' + fmt.esc(key) + '"></svg>' +
           '<div class="muted small right" style="margin-top:-4px">累计 ' +
             fmt.money((s.equity || []).length ? s.equity[s.equity.length - 1].cumulative : 0, true) + " U</div>" +
           '<div class="table-wrap" style="margin-top:10px">' +
@@ -460,6 +467,7 @@
   const tradesPage = {
     mode: "",
     period: "",
+    asset: "",
     async init() {
       $$("[data-mode]").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -475,12 +483,18 @@
           this.load();
         });
       });
+      const assetSelect = $("#f-asset");
+      if (assetSelect) assetSelect.addEventListener("change", () => {
+        this.asset = assetSelect.value;
+        this.load();
+      });
       await this.load();
     },
     async load() {
       const query = [];
       if (this.mode) query.push("mode=" + this.mode);
       if (this.period) query.push("period=" + this.period);
+      if (this.asset) query.push("asset=" + this.asset);
       const d = await api("/api/trades" + (query.length ? "?" + query.join("&") : ""));
       const s = d.stats;
       setText("#t-trades", fmt.int(s.trades));
@@ -504,7 +518,7 @@
           fmt.money(unredeemed.reduce((a, t) => a + t.shares, 0)) + " 份额）。请到 " +
           "<a href='https://polymarket.com/portfolio' target='_blank' rel='noopener'>Polymarket 持仓页</a> 赎回后再点「已赎回」。";
         $("#redeem-list").innerHTML = "<table><thead><tr><th>策略</th><th>时间</th><th>方向</th><th class='num'>份额</th><th></th></tr></thead><tbody>" +
-          unredeemed.map((t) => "<tr><td>" + fmt.esc(t.period) + "</td><td class='mono'>" + fmt.date(t.entry_ts) +
+          unredeemed.map((t) => "<tr><td>" + fmt.esc((t.asset || "BTC") + " " + t.period) + "</td><td class='mono'>" + fmt.date(t.entry_ts) +
             "</td><td>" + t.side + "</td><td class='num'>" + fmt.price(t.shares, 4) +
             "</td><td><button class='btn small' data-redeemed='" + t.id + "'>已赎回</button></td></tr>").join("") +
           "</tbody></table>";
@@ -526,7 +540,7 @@
         "<th class='num'>盈亏</th><th>结算</th><th>结果</th></tr></thead><tbody>" +
         rows.map((t) => {
           const slip = t.entry_price - t.signal_price;
-          return "<tr><td><span class='badge gray'>" + fmt.esc(t.period) + "</span></td>" +
+          return "<tr><td><span class='badge gray'>" + fmt.esc((t.asset || "BTC") + " " + t.period) + "</span></td>" +
             "<td>" + (t.mode === "live" ? "<span class='badge red'>实盘</span>" : "<span class='badge blue'>纸面</span>") + "</td>" +
             "<td class='mono'>" + fmt.date(t.entry_ts) + "</td>" +
             "<td>" + t.side + "</td>" +
@@ -545,28 +559,40 @@
 
   // ── config page ───────────────────────────────────────────────────────
   const configPage = {
-    strategy: "15m",
+    asset: "BTC",
+    period: "15m",
     payload: null,
+    get key() { return this.asset + ":" + this.period; },
     async init() {
-      $$("[data-strategy]").forEach((btn) => {
+      $$("[data-asset]").forEach((btn) => {
         btn.addEventListener("click", () => {
-          this.strategy = btn.getAttribute("data-strategy");
-          activate("[data-strategy]", btn);
+          this.asset = btn.getAttribute("data-asset");
+          activate("#cfg-assets [data-asset]", btn);
+          this.load();
+        });
+      });
+      $$("[data-cfg-period]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          this.period = btn.getAttribute("data-cfg-period");
+          activate("#cfg-periods [data-cfg-period]", btn);
           this.load();
         });
       });
       await this.load();
+      await this.loadMatrix();
       $("#cfg-form").addEventListener("submit", (e) => { e.preventDefault(); this.save(); });
       $("#cfg-reset").addEventListener("click", () => this.reset());
+      $("#cfg-recommended").addEventListener("click", () => this.fillRecommended());
       $("#mode-apply").addEventListener("click", () => this.applyMode());
       $("#kill-btn").addEventListener("click", () => this.control("killswitch"));
       $("#release-btn").addEventListener("click", () => this.control("release"));
       $("#pause-btn").addEventListener("click", () => this.pause());
       $("#resume-btn").addEventListener("click", () => this.control("resume"));
       this.statusLoop();
+      setInterval(() => this.statusLoop(), 5000);
     },
     async load() {
-      const payload = await api("/api/config?strategy=" + this.strategy);
+      const payload = await api("/api/config?strategy=" + encodeURIComponent(this.key));
       this.payload = payload;
       const groups = { strategy: $("#g-strategy"), execution: $("#g-execution"), risk: $("#g-risk") };
       Object.keys(groups).forEach((g) => { if (groups[g]) groups[g].innerHTML = ""; });
@@ -601,11 +627,72 @@
       } else {
         errEl.className = "hidden";
       }
-      setText("#cfg-mode", payload.mode);
-      setText("#cfg-asset", payload.asset + " · " + payload.period);
-      setText("#cfg-scope", this.strategy);
+      setText("#cfg-mode", payload.paper ? "纸面" : "实盘");
+      setText("#cfg-enabled", payload.enabled ? "已启用" : "未启用");
+      $("#cfg-enabled").className = "badge " + (payload.enabled ? "green" : "gray");
+      setText("#cfg-asset", payload.asset + " · " + payload.period +
+        (payload.researched === false ? " · 暂无回测" : ""));
+      setText("#cfg-scope", payload.key || this.key);
       const modeSelect = $("#cfg-trading-mode");
       if (modeSelect) modeSelect.value = payload.mode;
+    },
+    async loadMatrix() {
+      const el = $("#strategy-matrix");
+      if (!el) return;
+      try {
+        const d = await api("/api/strategies");
+        const byKey = {};
+        (d.strategies || []).forEach((s) => { byKey[s.key] = s; });
+        const head = "<table><thead><tr><th>币种</th>" +
+          d.periods.map((p) => "<th>" + fmt.esc(p) + "</th>").join("") +
+          "</tr></thead><tbody>";
+        const rows = d.assets.map((asset) => {
+          const cells = d.periods.map((period) => {
+            const s = byKey[asset + ":" + period];
+            if (!s) return "<td class='muted'>--</td>";
+            return "<td><button class='btn small " + (s.enabled ? "" : "ghost") +
+              "' data-toggle='" + fmt.esc(s.key) + "' data-enabled='" +
+              (s.enabled ? "true" : "false") + "'>" +
+              (s.enabled ? "已启用" : "未启用") + "</button>" +
+              " <span class='small muted'>" + fmt.esc(s.mode || "") + "</span></td>";
+          }).join("");
+          return "<tr><td><b>" + fmt.esc(asset) + "</b></td>" + cells + "</tr>";
+        }).join("");
+        el.innerHTML = head + rows + "</tbody></table>";
+        $$("[data-toggle]", el).forEach((btn) => {
+          btn.addEventListener("click", () => this.toggleStrategy(btn));
+        });
+      } catch (err) {
+        el.innerHTML = "<div class='alert error'>开关加载失败: " +
+          fmt.esc(err.message) + "</div>";
+      }
+    },
+    async toggleStrategy(btn) {
+      const key = btn.getAttribute("data-toggle");
+      const next = btn.getAttribute("data-enabled") !== "true";
+      if (!confirm((next ? "启用 " : "停用 ") + key + "？")) return;
+      try {
+        await api("/api/config", {
+          method: "PUT",
+          body: JSON.stringify({ strategy: key, values: { ENABLED: next } }),
+        });
+        toast(key + (next ? " 已启用" : " 已停用"), "ok");
+        await this.loadMatrix();
+        if (key === this.key) await this.load();
+        this.statusLoop();
+      } catch (err) {
+        toast("切换失败: " + err.message, "error");
+      }
+    },
+    fillRecommended() {
+      const rec = (this.payload && this.payload.recommended) || {};
+      const form = $("#cfg-form");
+      Object.entries(rec).forEach(([key, value]) => {
+        if (value === null || value === undefined) return;
+        const el = form.querySelector("[name='" + key + "']");
+        if (el) el.value = value;
+      });
+      toast("已填入文档推荐参数，点「保存参数」后生效", "ok");
     },
     async save() {
       const form = $("#cfg-form");
@@ -614,31 +701,34 @@
       try {
         await api("/api/config", {
           method: "PUT",
-          body: JSON.stringify({ strategy: this.strategy, values }),
+          body: JSON.stringify({ strategy: this.key, values }),
         });
-        toast(this.strategy + " 参数已保存，下一个窗口生效", "ok");
+        toast(this.key + " 参数已保存，下一个窗口生效", "ok");
         await this.load();
+        this.statusLoop();
       } catch (err) {
         toast("保存失败: " + err.message, "error");
       }
     },
     async reset() {
-      if (!confirm("恢复 " + this.strategy + " 的 config.toml / .env 原始参数？")) return;
-      await api("/api/config/reset?strategy=" + this.strategy, { method: "POST" });
+      if (!confirm("恢复 " + this.key + " 的默认参数（保留模式与启用状态）？")) return;
+      await api("/api/config/reset?strategy=" + encodeURIComponent(this.key), { method: "POST" });
       toast("已恢复默认", "ok");
       await this.load();
+      this.statusLoop();
     },
     async applyMode() {
       const mode = $("#cfg-trading-mode").value;
       const label = mode === "live" ? "实盘（真实资金）" : "纸面（模拟）";
-      if (!confirm("把 " + this.strategy + " 切换为 " + label + "？")) return;
+      if (!confirm("把 " + this.key + " 切换为 " + label + "？")) return;
       try {
         await api("/api/control/mode", {
           method: "POST",
-          body: JSON.stringify({ strategy: this.strategy, mode }),
+          body: JSON.stringify({ strategy: this.key, mode }),
         });
-        toast(this.strategy + " 已切换为 " + label, "ok");
+        toast(this.key + " 已切换为 " + label, "ok");
         await this.load();
+        await this.loadMatrix();
         this.statusLoop();
       } catch (err) {
         toast("切换失败: " + err.message, "error");
@@ -647,22 +737,22 @@
     async control(action) {
       let reason = "";
       if (action === "killswitch") {
-        reason = prompt("停止 " + this.strategy + " 新开仓的原因（可留空）", "手动停止");
+        reason = prompt("停止 " + this.key + " 新开仓的原因（可留空）", "手动停止");
         if (reason === null) return;
       }
       await api("/api/control/" + action, {
         method: "POST",
-        body: JSON.stringify({ strategy: this.strategy, reason: reason || "" }),
+        body: JSON.stringify({ strategy: this.key, reason: reason || "" }),
       });
       toast(action === "killswitch" ? "已停止" : "已恢复", "ok");
       this.statusLoop();
     },
     async pause() {
-      const minutes = Number(prompt("暂停 " + this.strategy + " 多少分钟？", "30"));
+      const minutes = Number(prompt("暂停 " + this.key + " 多少分钟？", "30"));
       if (!minutes || minutes <= 0) return;
       await api("/api/control/pause", {
         method: "POST",
-        body: JSON.stringify({ strategy: this.strategy, minutes, reason: "手动暂停" }),
+        body: JSON.stringify({ strategy: this.key, minutes, reason: "手动暂停" }),
       });
       toast("已暂停", "ok");
       this.statusLoop();
@@ -671,29 +761,36 @@
       try {
         const s = await api("/api/wallet");
         const balances = s.balances || {};
-        setText("#wallet-balance", Object.keys(balances).length
-          ? Object.entries(balances).map(([p, v]) => p + " " + (v === null ? "--" : fmt.money(v) + " U")).join(" · ")
-          : "--");
-        setText("#wallet-mode", Object.entries(s.modes || {}).map(([p, m]) => p + ":" + m).join(" · "));
+        const values = Array.from(new Set(Object.values(balances)
+          .filter((v) => v !== null && v !== undefined)
+          .map((v) => fmt.money(v) + " U")));
+        setText("#wallet-balance", values.length ? values.join(" / ") : "--");
+        setText("#wallet-mode", this.key + " · " + ((s.modes || {})[this.key] || "--"));
         const status = await api("/api/status");
-        const card = (status.strategies || []).find((x) => x.app.period === this.strategy);
+        const card = (status.strategies || []).find((x) =>
+          (x.app.key || (x.app.asset + ":" + x.app.period)) === this.key);
         const el = $("#ctrl-state");
         if (!card) { el.className = "alert warn"; el.textContent = "策略未运行"; return; }
+        if (card.app.enabled === false) {
+          el.className = "alert warn";
+          el.textContent = this.key + " 未启用：不会发现新市场或开仓。在上方「启用该策略」选「开启」并保存即可。";
+          return;
+        }
         const risk = card.risk;
         if (card.app.mode_fallback) {
           el.className = "alert warn";
-          el.textContent = this.strategy + " 实盘凭证缺失，已降级为纸面。配置 API_KEY/WALLET_PRIVATE_KEY 后可在上方切换。";
+          el.textContent = this.key + " 实盘凭证缺失，已降级为纸面。配置 API_KEY/WALLET_PRIVATE_KEY 后可在上方切换。";
           return;
         }
         if (risk.killswitch && risk.killswitch.active) {
           el.className = "alert error";
-          el.textContent = this.strategy + " 已停止新开仓。" + (risk.killswitch.reason ? " 原因：" + risk.killswitch.reason : "");
+          el.textContent = this.key + " 已停止新开仓。" + (risk.killswitch.reason ? " 原因：" + risk.killswitch.reason : "");
         } else if (risk.paused) {
           el.className = "alert warn";
-          el.textContent = this.strategy + " 暂停中，至 " + fmt.clock(risk.pause_until);
+          el.textContent = this.key + " 暂停中，至 " + fmt.clock(risk.pause_until);
         } else {
           el.className = "alert ok";
-          el.textContent = this.strategy + " 运行中：允许在信号出现时开仓。";
+          el.textContent = this.key + " 运行中：允许在信号出现时开仓。";
         }
       } catch (err) {
         setText("#ctrl-state", "状态查询失败: " + err.message);

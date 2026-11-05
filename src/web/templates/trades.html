@@ -11,7 +11,7 @@
 <body data-page="trades">
   <div class="topbar">
     <div class="topbar-inner">
-      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>BTC 尾盘</small></span></div>
+      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>多币种尾盘</small></span></div>
       {{NAV}}
       <div class="topbar-right">
         <span id="clock" class="mono small muted"></span>
@@ -26,6 +26,16 @@
         <p>每笔交易都按「信号价 → 成交价 → 结算」完整记录，滑点可直接与回测假设对比</p>
       </div>
       <div class="btn-row">
+        <select id="f-asset" aria-label="币种筛选" style="max-width:120px">
+          <option value="">全部币种</option>
+          <option value="BTC">BTC</option>
+          <option value="ETH">ETH</option>
+          <option value="SOL">SOL</option>
+          <option value="XRP">XRP</option>
+          <option value="DOGE">DOGE</option>
+          <option value="BNB">BNB</option>
+          <option value="HYPE">HYPE</option>
+        </select>
         <div class="segmented" role="group" aria-label="周期筛选">
           <button class="active" data-period="">全部周期</button>
           <button data-period="15m">15m</button>

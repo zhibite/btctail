@@ -19,9 +19,10 @@ def db(tmp_path):
 
 
 def _add(db: DB, slot: int, *, status="open", pnl=0.0, side="UP", cost=10.0, fee=0.5,
-         entry_ts=None, period="15m") -> int:
+         entry_ts=None, period="15m", asset="BTC") -> int:
     trade_id = db.create_trade(
-        slot=slot, period=period, mode="paper", side=side, token_id="t", condition_id="c",
+        slot=slot, period=period, asset=asset, mode="paper", side=side,
+        token_id="t", condition_id="c",
         signal_price=0.92, entry_price=0.92, shares=cost / 0.92, cost=cost, fee=fee,
         fee_rate=0.07, stake=10.0, order_id="o", entry_ts=entry_ts or time.time(),
     )
@@ -139,3 +140,22 @@ def test_risk_is_isolated_per_period_and_mode(db):
     assert fifteen.evaluate(now, 10.0, 1000.0).allowed is True
     # Paper losses must not block the live strategy.
     assert live.evaluate(now, 10.0, 1000.0).allowed is True
+
+
+def test_assets_are_isolated_in_the_same_slot(db):
+    _add(db, 700, asset="BTC")
+    _add(db, 700, asset="ETH")
+    assert db.trade_exists(700, "paper", "15m", "BTC") is True
+    assert db.trade_exists(700, "paper", "15m", "ETH") is True
+    assert len(db.recent_trades(asset="BTC")) == 1
+    assert len(db.recent_trades(asset="ETH")) == 1
+    assert len(db.recent_trades()) == 2
+    # Risk counters are per asset too.
+    settings = Settings(DAILY_LOSS_LIMIT_USD=50, MAX_CONSEC_LOSSES=0,
+                        MIN_WALLET_BALANCE_USD=0)
+    now = time.time()
+    _add(db, 701, status="lost", pnl=-60.0, asset="ETH", entry_ts=now - 5)
+    eth_risk = RiskManager(db, settings, period="15m", mode="paper", asset="ETH")
+    btc_risk = RiskManager(db, settings, period="15m", mode="paper", asset="BTC")
+    assert eth_risk.evaluate(now, 10.0, 1000.0).reason == "daily_loss_limit"
+    assert btc_risk.evaluate(now, 10.0, 1000.0).allowed is True

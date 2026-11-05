@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from src.config import Settings
+from src.config import Settings, strategy_key
 from src.execution.broker import Broker, EntryFill, LimitFill, LimitOrder, resolve_fee_rate
 from src.execution.clob_client import round_down
 from src.infra.clock import fmt_duration, slot_start, utc_iso
@@ -83,6 +83,8 @@ class Runtime:
         broker: Broker,
         ws: Optional[MarketWS] = None,
         broker_factory: Optional[Callable[[str], Broker]] = None,
+        ws_shared: bool = False,
+        pm_shared: bool = False,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -90,12 +92,20 @@ class Runtime:
         self.market_svc = market_svc
         self.broker = broker
         self.ws = ws
+        # All strategies of one period share a single MarketWS in main.py;
+        # stopping one runtime must not tear down the others' connection.
+        self.ws_shared = ws_shared
+        self.pm_shared = pm_shared
         # Builds a broker for a new mode at runtime (None = switching disabled).
         self._broker_factory = broker_factory
         # Set when live was requested but credentials were missing at boot.
         self.mode_fallback = ""
         self.mode_note = ""
-        self.risk = RiskManager(db, settings, period=settings.PERIOD, mode=broker.mode)
+        self.key = strategy_key(settings.ASSET, settings.PERIOD)
+        self.asset = settings.ASSET.upper()
+        self.period = settings.PERIOD
+        self.risk = RiskManager(db, settings, period=settings.PERIOD,
+                                mode=broker.mode, asset=self.asset, scope=self.key)
         self.collector: Optional[LiveCollector] = (
             LiveCollector(settings.collect_dir, settings.ASSET, settings.PERIOD)
             if settings.DATA_COLLECT_ENABLED else None
@@ -103,6 +113,7 @@ class Runtime:
         self.active: Optional[ActiveWindow] = None
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._ws_started = False
         self._clock: Callable[[], float] = time.time
         self._started_at = self._now()
         self._last_settle_poll = 0.0
@@ -146,23 +157,62 @@ class Runtime:
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
+    @property
+    def enabled(self) -> bool:
+        return bool(getattr(self.settings, "ENABLED", True))
+
+    async def _ensure_ws(self) -> None:
+        if self.ws is not None and not self._ws_started:
+            await self.ws.start()
+            self._ws_started = True
+
+    async def set_enabled(self, enabled: bool) -> None:
+        """Turn this strategy on/off without restarting the process.
+
+        Disabling stops new discoveries and entries but settlement keeps
+        running, so an open position is never stranded. Enabling starts the
+        shared market WebSocket if needed and opens a fresh window on the
+        next tick.
+        """
+        enabled = bool(enabled)
+        self.settings.ENABLED = enabled
+        if enabled:
+            await self._ensure_ws()
+            # Re-open the current slot so a strategy enabled mid-window does
+            # not keep the market object it may have discovered earlier.
+            if self.active is not None:
+                self._finalize_window(self.active)
+                self.active = None
+            log.warning("runtime.enabled", strategy=self.key)
+            return
+        if self.active is not None:
+            self._finalize_window(self.active)
+            self.active = None
+        if self.ws is not None:
+            self.ws.unwatch(self.key)
+        log.warning("runtime.disabled", strategy=self.key,
+                    note="已有持仓仍会结算")
+
     async def start(self) -> None:
         if self._running:
             return
         self._running = True
         self._started_at = self._now()
-        if self.ws is not None:
-            await self.ws.start()
-        self._task = asyncio.create_task(self._loop(), name="trading-loop")
+        if self.enabled:
+            await self._ensure_ws()
+        self._task = asyncio.create_task(self._loop(), name=f"trading-{self.key}")
         log.info(
             "runtime.started",
+            strategy=self.key,
+            enabled=self.enabled,
             mode=self.settings.TRADING_MODE,
             asset=self.settings.ASSET,
             period=self.settings.PERIOD,
             threshold=self.settings.ENTRY_THRESHOLD,
             confirm_s=self.settings.CONFIRM_SEC,
             max_price=self.settings.MAX_ENTRY_PRICE,
-            stake=self.settings.STAKE_USD,
+            paper_notional=self.settings.ENTRY_NOTIONAL_USD_PAPER,
+            live_notional=self.settings.ENTRY_NOTIONAL_USD_LIVE,
         )
 
     async def stop(self) -> None:
@@ -178,10 +228,13 @@ class Runtime:
             if not self.active.discovery_task.done():
                 self.active.discovery_task.cancel()
         if self.ws is not None:
-            await self.ws.stop()
-        await self.pm.close()
+            self.ws.unwatch(self.key)
+            if not self.ws_shared:
+                await self.ws.stop()
+        if not self.pm_shared:
+            await self.pm.close()
         await self.broker.close()
-        log.info("runtime.stopped")
+        log.info("runtime.stopped", strategy=self.key)
 
     # ── main loop ─────────────────────────────────────────────────────────
 
@@ -201,6 +254,8 @@ class Runtime:
             await asyncio.sleep(sleep_s)
 
     def _sleep_target(self, now: float) -> float:
+        if not self.enabled:
+            return 2.0
         aw = self.active
         if aw is None or aw.market is None:
             return 1.0
@@ -215,6 +270,12 @@ class Runtime:
 
     async def _tick(self, now: float) -> None:
         self._cycle_count += 1
+        # A disabled strategy still settles any position opened before it was
+        # turned off; it just does not discover markets or open new ones.
+        self._maybe_settle(now)
+        if not self.enabled:
+            return
+
         period = self.settings.window_seconds
         slot = slot_start(now, period)
         if self.active is None or self.active.slot != slot:
@@ -226,7 +287,6 @@ class Runtime:
         # window's market is still missing from Gamma. Both do network I/O, so
         # they are scheduled rather than awaited: the last 60 seconds of a
         # window must never queue behind a Gamma or balance request.
-        self._maybe_settle(now)
         self._maybe_refresh_balance()
         self._log_heartbeat(now)
 
@@ -259,7 +319,8 @@ class Runtime:
         self.active = aw
         log.info(
             "window.opened",
-            slot=slot, start_utc=utc_iso(slot), end_utc=utc_iso(end_ts),
+            strategy=self.key, slot=slot, start_utc=utc_iso(slot),
+            end_utc=utc_iso(end_ts),
             remaining=fmt_duration(end_ts - now),
         )
         # Kicked off in the background so a slow Gamma call cannot delay the
@@ -275,11 +336,11 @@ class Runtime:
             self._record_signal(aw, decision="skip", skip_reason=reason)
         if self.collector is not None:
             resolved = None
-            row = self.db.get_window(aw.slot, self.settings.PERIOD)
+            row = self.db.get_window(aw.slot, self.settings.PERIOD, self.asset)
             if row and row.get("resolved"):
                 resolved = Side.parse(row["resolved"])
             self.collector.flush_window(aw.slot, aw.market, resolved)
-        log.info("window.closed", slot=aw.slot,
+        log.info("window.closed", strategy=self.key, slot=aw.slot,
                  phase=state.phase.value if state else "n/a",
                  skip_reason=state.skip_reason if state else "",
                  entered=aw.entered, samples=samples)
@@ -323,10 +384,11 @@ class Runtime:
         aw.discovery_failures = 0
         self.db.upsert_window(market)
         if self.ws is not None:
-            self.ws.watch([market.token_up, market.token_down])
+            self.ws.watch([market.token_up, market.token_down], owner=self.key)
         log.info(
             "window.market_ready",
-            slot=aw.slot, slug=market.slug, condition_id=market.condition_id[:12],
+            strategy=self.key, slot=aw.slot, slug=market.slug,
+            condition_id=market.condition_id[:12],
             remaining=fmt_duration(aw.end_ts - self._now()),
             tick_size=market.tick_size,
         )
@@ -404,7 +466,7 @@ class Runtime:
         assert market is not None
         mode = self.broker.mode
 
-        if self.db.trade_exists(aw.slot, mode, self.settings.PERIOD):
+        if self.db.trade_exists(aw.slot, mode, self.settings.PERIOD, self.asset):
             aw.signal_recorded = True
             return
 
@@ -455,7 +517,8 @@ class Runtime:
             return
 
         limit = settings.entry_limit_for(decision.price)
-        notional = round(float(settings.ENTRY_NOTIONAL_USD), 2)
+        # Paper and live have independent budgets (default 10 / 5 USDC).
+        notional = round(float(settings.entry_notional_for(mode)), 2)
         # GTD/FAK orders at the CLOB are share-sized for limit orders; derive
         # the share count from the USDC budget at the maximum price we would
         # pay, so a full fill never costs more than the configured notional.
@@ -671,6 +734,7 @@ class Runtime:
         trade_id = self.db.create_trade(
             slot=aw.slot,
             period=self.settings.PERIOD,
+            asset=self.asset,
             mode=mode,
             side=decision.side.value,
             token_id=market.token_for(decision.side),
@@ -681,7 +745,7 @@ class Runtime:
             cost=fill.cost,
             fee=fee,
             fee_rate=fill.fee_rate,
-            stake=settings.STAKE_USD,
+            stake=notional,
             order_id=fill.order_id,
             status="open",
             entry_ts=now,
@@ -783,7 +847,7 @@ class Runtime:
             return False, "模式必须是 paper 或 live"
         if mode == self.broker.mode:
             return True, ""
-        if self.db.open_trades(period=self.settings.PERIOD):
+        if self.db.open_trades(period=self.settings.PERIOD, asset=self.asset):
             return False, "该策略还有未结算持仓，等结算后再切换"
         if self._broker_factory is None:
             return False, "当前进程未配置切换能力"
@@ -795,14 +859,15 @@ class Runtime:
         self.settings.TRADING_MODE = mode
         self.broker = broker
         self.risk = RiskManager(
-            self.db, self.settings, period=self.settings.PERIOD, mode=mode
+            self.db, self.settings, period=self.settings.PERIOD, mode=mode,
+            asset=self.asset, scope=self.key,
         )
         self._last_balance = None
         self._last_balance_ts = 0.0
         self._stats_cache = None
         self.mode_fallback = ""
         self.mode_note = ""
-        log.warning("runtime.mode_changed", period=self.settings.PERIOD,
+        log.warning("runtime.mode_changed", strategy=self.key,
                     old=old, new=mode)
         return True, ""
 
@@ -820,14 +885,15 @@ class Runtime:
         # Deliberately not filtered by mode: if the operator switches
         # paper/live, any position opened under the previous mode must still
         # settle instead of being stranded forever.
-        for trade in self.db.open_trades(period=self.settings.PERIOD):
+        for trade in self.db.open_trades(period=self.settings.PERIOD,
+                                         asset=self.asset):
             slot = int(trade["slot"])
             end_ts = slot + self.settings.window_seconds
             if now < end_ts + 5:
                 continue
             condition_id = trade.get("condition_id") or ""
             slug = ""
-            row = self.db.get_window(slot, self.settings.PERIOD)
+            row = self.db.get_window(slot, self.settings.PERIOD, self.asset)
             if row:
                 slug = row.get("slug") or ""
                 condition_id = condition_id or row.get("condition_id") or ""
@@ -874,7 +940,8 @@ class Runtime:
             payout = float(trade.get("shares") or 0) if won else 0.0
             self.db.settle_trade(int(trade["id"]), resolved_side=resolved,
                                  pnl=pnl, payout=payout)
-            self.db.set_window_resolution(slot, self.settings.PERIOD, resolved, now)
+            self.db.set_window_resolution(slot, self.settings.PERIOD,
+                                          self.asset, resolved, now)
             if trade.get("mode") == "live" and won:
                 # Winning conditional tokens stay in the wallet until they are
                 # redeemed on polymarket.com; surface it instead of pretending
@@ -919,6 +986,7 @@ class Runtime:
             self.db.add_signal(
                 slot=aw.slot,
                 period=self.settings.PERIOD,
+                asset=self.asset,
                 mode=self.broker.mode,
                 decision=decision,
                 side=side.value if side else "",
@@ -963,6 +1031,7 @@ class Runtime:
         state = aw.strategy.state if aw and aw.strategy else None
         log.info(
             "heartbeat",
+            strategy=self.key,
             mode=self.broker.mode,
             slot=aw.slot if aw else None,
             remaining=fmt_duration(aw.end_ts - now) if aw else None,
@@ -984,11 +1053,12 @@ class Runtime:
         aw = self.active
         mode = self.broker.mode
         trades = self.db.recent_trades(limit=200, mode=mode,
-                                       period=self.settings.PERIOD)
+                                       period=self.settings.PERIOD,
+                                       asset=self.asset)
         cache = self._stats_cache
         if cache is None or cache[1] != mode or now - cache[0] > 5.0:
             settled = self.db.all_settled_trades(
-                mode=mode, period=self.settings.PERIOD
+                mode=mode, period=self.settings.PERIOD, asset=self.asset
             )
             stats = compute_stats(settled)
             equity = equity_curve(settled)[-500:]
@@ -1036,8 +1106,10 @@ class Runtime:
                 "paper": self.settings.is_paper,
                 "mode_fallback": self.mode_fallback,
                 "mode_note": self.mode_note,
+                "key": self.key,
                 "asset": self.settings.ASSET,
                 "period": self.settings.PERIOD,
+                "enabled": self.enabled,
                 "uptime_s": now - self._started_at,
                 "cycles": self._cycle_count,
                 "ws_connected": bool(self.ws.connected) if self.ws else False,
@@ -1051,7 +1123,9 @@ class Runtime:
                 "max_entry_price": self.settings.MAX_ENTRY_PRICE,
                 "min_entry_price": self.settings.MIN_ENTRY_PRICE,
                 "stake_usd": self.settings.STAKE_USD,
-                "entry_notional_usd": float(self.settings.ENTRY_NOTIONAL_USD),
+                "entry_notional_usd": float(self.settings.entry_notional_for(mode)),
+                "entry_notional_paper": float(self.settings.ENTRY_NOTIONAL_USD_PAPER),
+                "entry_notional_live": float(self.settings.ENTRY_NOTIONAL_USD_LIVE),
                 "order_type": self.settings.ENTRY_ORDER_TYPE,
                 "gtd_timeout_s": self.settings.GTD_FILL_TIMEOUT_S,
                 "maker_fee_rate": self.settings.MAKER_FEE_RATE,
@@ -1069,9 +1143,11 @@ class Runtime:
             "equity": equity,
             "recent_trades": trades[:recent_limit],
             "recent_signals": self.db.recent_signals(
-                limit=recent_limit, mode=mode, period=self.settings.PERIOD
+                limit=recent_limit, mode=mode, period=self.settings.PERIOD,
+                asset=self.asset,
             ),
-            "unredeemed": self.db.unredeemed_trades(self.settings.PERIOD),
+            "unredeemed": self.db.unredeemed_trades(self.settings.PERIOD,
+                                                    self.asset),
             "dataset": {
                 "collect_enabled": self.settings.DATA_COLLECT_ENABLED,
                 "collect_dir": str(self.settings.collect_dir),

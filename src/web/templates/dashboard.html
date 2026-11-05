@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#070b10">
-  <title>PolyTail · BTC 尾盘策略</title>
+  <title>PolyTail · 多币种尾盘策略</title>
   <link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__">
   <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
 </head>
 <body data-page="dashboard">
   <div class="topbar">
     <div class="topbar-inner">
-      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>BTC 尾盘</small></span></div>
+      <div class="brand"><span class="brand-mark">P</span><span>PolyTail <small>多币种尾盘</small></span></div>
       {{NAV}}
       <div class="topbar-right">
         <span id="conn" class="badge gray">稳定</span>
@@ -23,8 +23,8 @@
   <div class="layout">
     <div class="page-head">
       <div>
-        <h1>双策略总览</h1>
-        <p>15m：实盘（60s / 0.90 / 10s / 0.94） · 5m：纸面 + Agent 持续调优</p>
+        <h1>多币种尾盘总览</h1>
+        <p>7 个币 × 15m / 5m，独立参数与风控；默认只启用 BTC 15m / 5m，纸面 10U / 实盘 5U</p>
       </div>
       <div class="btn-row">
         <button class="btn small danger" id="stop-all">全部停止新开仓</button>
@@ -33,7 +33,7 @@
     </div>
 
     <div class="stats">
-      <div class="stat"><div class="k">合计交易</div><div class="v" id="ov-trades">--</div><div class="s">两个策略已结算合计</div></div>
+      <div class="stat"><div class="k">合计交易</div><div class="v" id="ov-trades">--</div><div class="s">已启用策略合计</div></div>
       <div class="stat"><div class="k">合计净收益</div><div class="v" id="ov-pnl">--</div><div class="s">已扣官方费用</div></div>
       <div class="stat"><div class="k">合计 ROI</div><div class="v" id="ov-roi">--</div><div class="s">按投入本金</div></div>
       <div class="stat"><div class="k">持仓 / 胜率</div><div class="v" id="ov-open">--</div><div class="s">胜率 <span id="ov-winrate">--</span></div></div>
@@ -45,7 +45,7 @@
 
     <div class="card" style="margin-top:16px">
       <div class="card-head">
-        <div class="card-title">最近信号（两策略合并）</div>
+        <div class="card-title">最近信号（已启用策略合并）</div>
         <a href="/trades" class="small">交易记录 →</a>
       </div>
       <div class="table-wrap" id="signals-all"></div>
@@ -55,12 +55,14 @@
       <div class="card-head"><div class="card-title">策略说明</div></div>
       <div class="md">
         <ul>
-          <li><b>15m</b>：3 个月回测 248 笔、胜率 97.18%、+4.27% ROI（t=3.75）。参数按文档冻结，
-            不建议继续调参；用「参数」页的样本外检验确认新数据仍然成立。</li>
-          <li><b>5m</b>：文档显示核心规则是滑点陷阱；最强的只是「最后 10–20 秒」这个时间子集
-            （BTC 最后 10 秒 +5.88%、t=3.41，但仅 109 笔）。默认按最佳简单版本起步：
-            最后 20 秒 / 0.90 阈值 / 0.92 上限 / 无确认 / 10 USDC，再用「研究 / Agent」页探索更短窗口。</li>
-          <li>两个策略共享一个钱包，但风控（日亏损、连亏、暂停）按策略独立计算。</li>
+          <li><b>7 个币</b>：BTC / ETH / SOL / XRP / DOGE / BNB / HYPE，各有 15m 与 5m 两套尾盘策略。
+            推荐参数来自 docs 目录中的稳健版回测；XRP 暂无独立文档，先用保守通用参数。</li>
+          <li><b>默认只启用 BTC 15m / 5m</b>，其余在「参数」页按币种开启。全部默认纸面 10 USDC；
+            实盘单笔默认 5 USDC，切换模式后生效。</li>
+          <li><b>15m</b> 参数通常更稳；<b>5m</b> 对滑点和流动性更敏感，BNB / HYPE / DOGE 的尾部流动性尤其薄，
+            建议先用纸面观察成交率。</li>
+          <li>所有策略共享一个钱包，但风控（日亏损、连亏、暂停）按「币种 + 周期」独立计算，
+            纸面与实盘也互不影响。</li>
         </ul>
       </div>
     </div>

@@ -20,6 +20,76 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT = Path(__file__).resolve().parent.parent
 
+# ---------------------------------------------------------------------------
+# Multi-asset tail strategies
+# ---------------------------------------------------------------------------
+# The seven crypto Up/Down assets listed by Polymarket for the 5m / 15m
+# series. The order here is the order shown on the dashboard / config page.
+ASSET_ORDER: tuple[str, ...] = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE")
+PERIODS: tuple[str, ...] = ("15m", "5m")
+
+# Default per-strategy parameters from docs/*_optimal_parameters.md
+# (the "稳健版" table, 10 USDC per trade). Format:
+#   entry_window_sec / threshold / confirm_sec / max_entry_price
+#
+# XRP has no dedicated research report in docs/, so it starts from the
+# conservative generic configuration used by BTC before the 2026 tuning
+# (60s / 0.90 / 10s / 0.94 and 20s / 0.90 / 0s / 0.92). Everything ships in
+# paper mode until an operator deliberately switches a strategy to live.
+RECOMMENDED_PARAMS: dict[tuple[str, str], dict[str, float]] = {
+    ("BTC", "15m"): {"entry_window_sec": 60, "threshold": 0.94,
+                     "confirm_sec": 15, "max_entry_price": 0.96},
+    ("BTC", "5m"): {"entry_window_sec": 10, "threshold": 0.88,
+                    "confirm_sec": 0, "max_entry_price": 0.90},
+    ("ETH", "15m"): {"entry_window_sec": 45, "threshold": 0.84,
+                     "confirm_sec": 10, "max_entry_price": 0.92},
+    ("ETH", "5m"): {"entry_window_sec": 15, "threshold": 0.90,
+                    "confirm_sec": 0, "max_entry_price": 0.93},
+    ("SOL", "15m"): {"entry_window_sec": 45, "threshold": 0.84,
+                     "confirm_sec": 0, "max_entry_price": 0.93},
+    ("SOL", "5m"): {"entry_window_sec": 20, "threshold": 0.84,
+                    "confirm_sec": 0, "max_entry_price": 0.95},
+    ("XRP", "15m"): {"entry_window_sec": 60, "threshold": 0.90,
+                     "confirm_sec": 10, "max_entry_price": 0.94},
+    ("XRP", "5m"): {"entry_window_sec": 20, "threshold": 0.90,
+                    "confirm_sec": 0, "max_entry_price": 0.92},
+    ("DOGE", "15m"): {"entry_window_sec": 60, "threshold": 0.86,
+                      "confirm_sec": 10, "max_entry_price": 0.95},
+    ("DOGE", "5m"): {"entry_window_sec": 25, "threshold": 0.84,
+                     "confirm_sec": 2, "max_entry_price": 0.98},
+    ("BNB", "15m"): {"entry_window_sec": 60, "threshold": 0.84,
+                     "confirm_sec": 0, "max_entry_price": 0.96},
+    ("BNB", "5m"): {"entry_window_sec": 10, "threshold": 0.84,
+                    "confirm_sec": 1, "max_entry_price": 0.95},
+    ("HYPE", "15m"): {"entry_window_sec": 105, "threshold": 0.88,
+                      "confirm_sec": 10, "max_entry_price": 0.97},
+    ("HYPE", "5m"): {"entry_window_sec": 15, "threshold": 0.90,
+                     "confirm_sec": 0, "max_entry_price": 0.93},
+}
+
+# Assets that have a real backtest report behind their defaults.
+RESEARCHED_ASSETS: frozenset[str] = frozenset(
+    {"BTC", "ETH", "SOL", "DOGE", "BNB", "HYPE"}
+)
+
+
+def strategy_key(asset: str, period: str) -> str:
+    """Stable identifier used by the DB, APIs and dashboard: ``BTC:15m``."""
+    return f"{asset.strip().upper()}:{period.strip()}"
+
+
+def parse_strategy_key(value: str | None) -> tuple[str, str]:
+    """Accept ``BTC:15m`` (and legacy ``15m`` / ``5m`` -> BTC)."""
+    raw = (value or "").strip()
+    if raw in PERIODS:
+        return "BTC", raw
+    if ":" in raw:
+        asset, _, period = raw.partition(":")
+        asset = asset.upper()
+        if asset in ASSET_ORDER and period in PERIODS:
+            return asset, period
+    raise ValueError(f"未知策略: {value}")
+
 # Load .env files into os.environ *before* Settings is built, so that the
 # precedence above is honoured uniformly (pydantic-settings alone lets init
 # kwargs beat env-file values, which would make config.toml outrank .env).
@@ -58,29 +128,35 @@ class Settings(BaseSettings):
     )
 
     # ── Identity ──────────────────────────────────────────────────────────
-    APP_NAME: str = "PolyTail BTC"
+    APP_NAME: str = "PolyTail 多币种"
     ASSET: str = "BTC"
     PERIOD: str = "15m"
     ROUND_PERIOD_S: int = 900
 
     # paper = simulate fills, record everything, never touch the wallet
     # live  = real orders on Polymarket (GTD maker first, FAK fallback)
-    # These are the defaults; the dashboard can switch per strategy at runtime.
-    TRADING_MODE: str = "live"
+    # All seven assets start in paper. The dashboard can switch a single
+    # strategy to live at runtime once its credentials and track record are
+    # verified.
+    TRADING_MODE: str = "paper"
 
-    # ── Strategy (the parameters from docs/late_window_strategy_summary.md) ──
-    # The generic names configure the **15m** strategy (the documented,
-    # frozen configuration). The 5m strategy has its own *_5M overrides and
-    # is the one meant for continuous agent tuning.
+    # ── Strategy (the parameters from docs/optimal_parameters.md) ──────────
+    # The generic names configure the **BTC 15m** strategy (the documented,
+    # frozen configuration). BTC 5m has its own *_5M overrides; every other
+    # asset uses RECOMMENDED_PARAMS via ``for_strategy``.
     ENTRY_WINDOW_SEC: float = 60.0     # only act in the last N seconds
-    ENTRY_THRESHOLD: float = 0.88      # first side to reach this triggers
-    CONFIRM_SEC: float = 10.0          # wait, then require it is still >= threshold
-    MAX_ENTRY_PRICE: float = 0.94      # skip if the confirmed price is >= this
+    ENTRY_THRESHOLD: float = 0.94      # first side to reach this triggers
+    CONFIRM_SEC: float = 15.0          # wait, then require it is still >= threshold
+    MAX_ENTRY_PRICE: float = 0.96      # skip if the confirmed price is >= this
     MIN_ENTRY_PRICE: float = 0.0       # 0 disables
-    STAKE_USD: float = 10.0          # backtest notional (same as live notional)
-    # Live sizing is by USDC. A GTD limit order must be sized in shares, so
-    # the runtime converts: shares = notional / limit (rounded down), which
-    # keeps the documented 10 USDC per trade and the 5-share CLOB minimum.
+    STAKE_USD: float = 10.0          # backtest notional (10 USDC per trade)
+    # Order sizing is by USDC and is configured separately for paper and
+    # live execution: a strategy can be tested at 10 U and then promoted to
+    # live at a smaller 5 U size without changing its paper record.
+    ENTRY_NOTIONAL_USD_PAPER: float = 10.0
+    ENTRY_NOTIONAL_USD_LIVE: float = 5.0
+    # Legacy/backtest notional. ``for_strategy`` mirrors the paper size here
+    # so research and paper execution stay aligned.
     ENTRY_NOTIONAL_USD: float = 10.0
     # "gtd": rest a maker limit at the signal price, then optionally fall
     # back to FAK if it has not filled. "fak": send a taker order directly.
@@ -93,27 +169,29 @@ class Settings(BaseSettings):
     MAX_ENTRIES_PER_WINDOW: int = 1
 
     # ── Strategies to run (one process, one loop per strategy) ────────────
+    # BTC 15m / 5m are the only strategies enabled out of the box. Every
+    # other asset is created but idle until enabled from the config page.
+    # ENABLED_STRATEGIES can override the default list, e.g.
+    # "BTC:15m,BTC:5m,ETH:15m".
     ENABLED_15M: bool = True
     ENABLED_5M: bool = True
-    # Per-strategy mode. Empty = inherit TRADING_MODE. Defaults follow the
-    # operator's decision: 15m live, 5m paper until the agent has found
-    # something worth trading.
+    ENABLED_STRATEGIES: str = ""
+    # Set per strategy at runtime; not a strategy parameter.
+    ENABLED: bool = True
+    # Per-strategy mode. Empty = inherit TRADING_MODE. Everything defaults
+    # to paper; the operator can promote one strategy at a time.
     TRADING_MODE_5M: str = "paper"
 
-    # 5m defaults start from the doc's best simple configuration
-    # (0.90 / no confirmation / 0.92 cap) and use the last 20 seconds, which
-    # the June-October experiment found superior to 30s: +404.17U / ROI
-    # +1.35% / t=2.67 vs the 30s baseline +308.68 / +0.69% / t=1.61, and it
-    # survives 0.01 slippage (+248.60) while the baseline barely does
-    # (+78.29). The confirm filter stays off because the window is too short.
-    ENTRY_WINDOW_SEC_5M: float = 20.0
-    ENTRY_THRESHOLD_5M: float = 0.90
+    # BTC 5m defaults are the "稳健版" from docs/optimal_parameters.md:
+    # 10s window / 0.88 / no confirmation / 0.90 cap.
+    ENTRY_WINDOW_SEC_5M: float = 10.0
+    ENTRY_THRESHOLD_5M: float = 0.88
     CONFIRM_SEC_5M: float = 0.0
-    MAX_ENTRY_PRICE_5M: float = 0.92
+    MAX_ENTRY_PRICE_5M: float = 0.90
     MIN_ENTRY_PRICE_5M: float = 0.0
     # Backtest stake and live order size share one number so the research
-    # results and the deployed strategy cannot drift apart. The operator
-    # chose 10 USDC for 5m after the rare-entry review.
+    # results and the deployed strategy cannot drift apart. All strategies
+    # start at 10 USDC per trade.
     STAKE_USD_5M: float = 10.0
     ENTRY_NOTIONAL_USD_5M: float = 10.0
     REARM_AFTER_FAILED_CONFIRM_5M: bool = False
@@ -251,6 +329,13 @@ class Settings(BaseSettings):
         """Marketable limit for a taker BUY at `signal_price`."""
         return min(self.EXEC_LIMIT_MAX, round(signal_price + self.EXEC_SLIPPAGE, 4))
 
+    def entry_notional_for(self, mode: str | None = None) -> float:
+        """USDC budget for one entry in the given execution mode."""
+        resolved = (mode or self.TRADING_MODE or "paper").strip().lower()
+        if resolved == "live":
+            return float(self.ENTRY_NOTIONAL_USD_LIVE)
+        return float(self.ENTRY_NOTIONAL_USD_PAPER)
+
     def strategy_params(self) -> dict:
         """The subset the strategy engine consumes (for this settings' PERIOD)."""
         return {
@@ -264,17 +349,40 @@ class Settings(BaseSettings):
 
     # ── Multi-strategy helpers ────────────────────────────────────────────
 
-    def for_period(self, period: str) -> "Settings":
-        """Independent settings for one strategy.
+    def _default_enabled(self, asset: str, period: str) -> bool:
+        raw = (self.ENABLED_STRATEGIES or "").strip()
+        if raw:
+            wanted = {part.strip().upper() for part in raw.split(",") if part.strip()}
+            key = strategy_key(asset, period)
+            return key.upper() in wanted or key in wanted
+        if asset == "BTC":
+            return bool(self.ENABLED_15M if period == "15m" else self.ENABLED_5M)
+        return False
 
-        Everything (broker mode, stake, strategy params) is per strategy, so
-        the 15m and 5m runtimes can share a process and a database without
-        touching each other's configuration. Runtime overrides are applied to
-        the returned clone by ``src/web/runtime_config``.
+    def for_strategy(self, asset: str, period: str) -> "Settings":
+        """Independent settings for one ``ASSET`` x ``period`` strategy.
+
+        Everything (broker mode, stake, strategy params, enabled flag) is per
+        strategy, so all seven assets and both periods can share one process
+        and one database without touching each other's configuration. Runtime
+        overrides are applied to the returned clone by
+        ``src/web/runtime_config``.
         """
+        asset = (asset or "BTC").strip().upper()
+        period = (period or "15m").strip()
+        if asset not in ASSET_ORDER:
+            raise ValueError(f"不支持的资产: {asset}")
+        if period not in PERIODS:
+            raise ValueError(f"不支持的周期: {period}")
+
         clone = self.model_copy(deep=True)
+        clone.ASSET = asset
         clone.PERIOD = period
-        if period == "5m":
+
+        if asset == "BTC" and period == "15m":
+            # Base fields already carry config.toml / .env overrides.
+            pass
+        elif asset == "BTC" and period == "5m":
             clone.ENTRY_WINDOW_SEC = float(self.ENTRY_WINDOW_SEC_5M)
             clone.ENTRY_THRESHOLD = float(self.ENTRY_THRESHOLD_5M)
             clone.CONFIRM_SEC = float(self.CONFIRM_SEC_5M)
@@ -283,8 +391,39 @@ class Settings(BaseSettings):
             clone.STAKE_USD = float(self.STAKE_USD_5M)
             clone.ENTRY_NOTIONAL_USD = float(self.ENTRY_NOTIONAL_USD_5M)
             clone.REARM_AFTER_FAILED_CONFIRM = bool(self.REARM_AFTER_FAILED_CONFIRM_5M)
-            clone.TRADING_MODE = (self.TRADING_MODE_5M or self.TRADING_MODE).strip().lower()
+        else:
+            defaults = RECOMMENDED_PARAMS[(asset, period)]
+            clone.ENTRY_WINDOW_SEC = float(defaults["entry_window_sec"])
+            clone.ENTRY_THRESHOLD = float(defaults["threshold"])
+            clone.CONFIRM_SEC = float(defaults["confirm_sec"])
+            clone.MAX_ENTRY_PRICE = float(defaults["max_entry_price"])
+            clone.MIN_ENTRY_PRICE = 0.0
+            clone.STAKE_USD = 10.0
+            clone.ENTRY_NOTIONAL_USD = 10.0
+            clone.REARM_AFTER_FAILED_CONFIRM = False
+
+        if asset == "BTC" and period == "15m":
+            mode = self.TRADING_MODE
+        elif asset == "BTC" and period == "5m":
+            mode = self.TRADING_MODE_5M or self.TRADING_MODE
+        else:
+            # New assets never go live by accident through an inherited
+            # global TRADING_MODE; the operator promotes them explicitly.
+            mode = "paper"
+        clone.TRADING_MODE = (mode or "paper").strip().lower()
+        # Paper and live sizes are separate knobs for every strategy:
+        # 10 USDC while simulating, 5 USDC once promoted to real money.
+        clone.ENTRY_NOTIONAL_USD_PAPER = float(self.ENTRY_NOTIONAL_USD_PAPER)
+        clone.ENTRY_NOTIONAL_USD_LIVE = float(self.ENTRY_NOTIONAL_USD_LIVE)
+        # Research/backtest consume the legacy field; keep it aligned with
+        # the paper budget (the mode every new strategy starts in).
+        clone.ENTRY_NOTIONAL_USD = clone.ENTRY_NOTIONAL_USD_PAPER
+        clone.ENABLED = self._default_enabled(asset, period)
         return clone
+
+    def for_period(self, period: str) -> "Settings":
+        """Backward-compatible alias for the configured base asset."""
+        return self.for_strategy(self.ASSET or "BTC", period)
 
     def enabled_periods(self) -> list[str]:
         periods = []
@@ -295,13 +434,26 @@ class Settings(BaseSettings):
         return periods
 
     def strategy_settings(self) -> dict[str, "Settings"]:
-        """{period: per-strategy Settings} for everything enabled."""
-        return {period: self.for_period(period) for period in self.enabled_periods()}
+        """{strategy key: Settings} for every supported asset x period."""
+        return {
+            strategy_key(asset, period): self.for_strategy(asset, period)
+            for asset in ASSET_ORDER
+            for period in PERIODS
+        }
+
+    def enabled_strategy_settings(self) -> dict[str, "Settings"]:
+        """Only the strategies enabled by config / env defaults."""
+        return {
+            key: strategy
+            for key, strategy in self.strategy_settings().items()
+            if strategy.ENABLED
+        }
 
     def validation_errors(self) -> list[str]:
         errors: list[str] = []
         for name in ("ENTRY_WINDOW_SEC", "ENTRY_THRESHOLD", "CONFIRM_SEC",
                      "MAX_ENTRY_PRICE", "MIN_ENTRY_PRICE", "STAKE_USD",
+                     "ENTRY_NOTIONAL_USD_PAPER", "ENTRY_NOTIONAL_USD_LIVE",
                      "ENTRY_NOTIONAL_USD", "EXEC_SLIPPAGE", "TAKER_FEE_RATE"):
             try:
                 if not math.isfinite(float(getattr(self, name))):
@@ -334,18 +486,22 @@ class Settings(BaseSettings):
             errors.append("TRADING_MODE 必须是 paper 或 live")
         if self.ENTRY_ORDER_TYPE not in ("gtd", "fak"):
             errors.append("ENTRY_ORDER_TYPE 必须是 gtd 或 fak")
-        if self.ENTRY_NOTIONAL_USD <= 0:
-            errors.append("ENTRY_NOTIONAL_USD 必须 > 0")
-        # A GTD is sized in shares; at the highest allowed price the order
-        # must still reach the CLOB's 5-share minimum.
-        if (
-            self.ENTRY_ORDER_TYPE == "gtd"
-            and self.MAX_ENTRY_PRICE > 0
-            and self.ENTRY_NOTIONAL_USD / self.MAX_ENTRY_PRICE < 5
-        ):
-            errors.append(
-                "GTD 挂单最少 5 股；请把单笔金额提高到至少 5 × 入场价上限，或改用 fak"
-            )
+        for name in ("ENTRY_NOTIONAL_USD_PAPER", "ENTRY_NOTIONAL_USD_LIVE",
+                     "ENTRY_NOTIONAL_USD"):
+            value = float(getattr(self, name))
+            if value <= 0:
+                errors.append(f"{name} 必须 > 0")
+            # A GTD is sized in shares; at the highest allowed price the
+            # order must still reach the CLOB's 5-share minimum.
+            if (
+                self.ENTRY_ORDER_TYPE == "gtd"
+                and self.MAX_ENTRY_PRICE > 0
+                and value / self.MAX_ENTRY_PRICE < 5
+            ):
+                errors.append(
+                    f"GTD 挂单最少 5 股；请把 {name} 提高到至少 "
+                    "5 × 入场价上限，或改用 fak"
+                )
         if self.GTD_FILL_TIMEOUT_S <= 0:
             errors.append("GTD_FILL_TIMEOUT_S 必须 > 0")
         if self.MAKER_FEE_RATE < 0 or self.MAKER_FEE_RATE > 0.5:
@@ -356,6 +512,9 @@ class Settings(BaseSettings):
 # Fields the dashboard / agent may change at runtime, with bounds used by
 # both server-side validation and the research optimizer.
 TUNABLE_SPECS: dict[str, dict] = {
+    "ENABLED": {"group": "strategy", "type": "bool",
+                "label": "启用该策略",
+                "help": "关闭后不再发现新市场或开仓；已有持仓仍会持有到结算。"},
     "ENTRY_WINDOW_SEC": {"group": "strategy", "type": "int", "min": 10, "max": 600, "step": 5,
                          "label": "入场窗口(秒)",
                          "help": "只看窗口最后 N 秒。回测推荐 60。"},
@@ -371,9 +530,14 @@ TUNABLE_SPECS: dict[str, dict] = {
     "MIN_ENTRY_PRICE": {"group": "strategy", "type": "float", "min": 0.0, "max": 0.95, "step": 0.01,
                         "label": "入场价下限",
                         "help": "0 表示不启用。"},
-    "ENTRY_NOTIONAL_USD": {"group": "strategy", "type": "float", "min": 1, "max": 100000,
-                           "step": 1, "label": "单笔金额(USDC)",
-                           "help": "按金额下单；GTD 会按限价换算成股数（最少 5 股）。"},
+    "ENTRY_NOTIONAL_USD_PAPER": {"group": "strategy", "type": "float",
+                                 "min": 1, "max": 100000, "step": 1,
+                                 "label": "纸面单笔金额(USDC)",
+                                 "help": "纸面模式每笔投入；默认 10U。GTD 会按限价换算成股数（最少 5 股）。"},
+    "ENTRY_NOTIONAL_USD_LIVE": {"group": "strategy", "type": "float",
+                                "min": 1, "max": 100000, "step": 1,
+                                "label": "实盘单笔金额(USDC)",
+                                "help": "实盘模式每笔投入；默认 5U。切换模式后立刻使用对应金额。"},
     "EXEC_SLIPPAGE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.05, "step": 0.001,
                       "label": "执行滑点上限",
                       "help": "GTD/FAK 限价 = 信号价 + 该值。回测敏感性 0.005 / 0.01。"},

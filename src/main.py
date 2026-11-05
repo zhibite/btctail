@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src import config
-from src.config import Settings
+from src.config import PERIODS, Settings, strategy_key
 from src.execution.broker import Broker, build_broker
 from src.execution.clob_client import ClobClient
 from src.infra.logging import configure_logging, get_logger
@@ -125,41 +125,48 @@ async def run() -> int:
 
     db = DB(settings.db_path)
 
-    # Per-strategy settings clones, with that strategy's runtime overrides.
+    # Per-strategy settings clones (7 assets x 2 periods), each with its own
+    # runtime overrides. Disabled strategies are created but idle, so the
+    # config page can turn one on without a restart.
     strategies: dict[str, Settings] = {}
-    for period, strategy in settings.strategy_settings().items():
-        runtime_config.apply_overrides(strategy, db, period)
-        runtime_config.apply_mode_override(strategy, db, period)
-        strategies[period] = strategy
+    for key, strategy in settings.strategy_settings().items():
+        runtime_config.apply_overrides(strategy, db, key)
+        runtime_config.apply_mode_override(strategy, db, key)
+        strategies[key] = strategy
 
     if not strategies:
-        log.error("boot.no_strategy", note="ENABLED_15M / ENABLED_5M 都是关闭状态")
+        log.error("boot.no_strategy", note="没有任何策略配置")
         return 2
 
     fatal = False
-    for period, strategy in strategies.items():
+    for key, strategy in strategies.items():
         errors = strategy.validation_errors()
-        for message in errors:
-            log.error("config.invalid", period=period, error=message)
-        if errors:
+        if errors and strategy.ENABLED:
+            for message in errors:
+                log.error("config.invalid", strategy=key, error=message)
             fatal = True
+        elif errors:
+            for message in errors:
+                log.warning("config.invalid_disabled", strategy=key, error=message)
     if fatal:
-        log.error("config.abort", note="策略参数不合法，拒绝启动")
+        log.error("config.abort", note="启用的策略参数不合法，拒绝启动")
         return 2
 
     log.info(
         "boot",
         app=settings.APP_NAME,
         strategies={
-            period: {
+            key: {
+                "enabled": s.ENABLED,
                 "mode": s.TRADING_MODE,
                 "window_s": s.ENTRY_WINDOW_SEC,
                 "threshold": s.ENTRY_THRESHOLD,
                 "confirm_s": s.CONFIRM_SEC,
                 "max_price": s.MAX_ENTRY_PRICE,
-                "stake": s.STAKE_USD,
+                "paper_notional": s.ENTRY_NOTIONAL_USD_PAPER,
+                "live_notional": s.ENTRY_NOTIONAL_USD_LIVE,
             }
-            for period, s in strategies.items()
+            for key, s in strategies.items()
         },
         db=str(settings.db_path),
     )
@@ -182,12 +189,12 @@ async def run() -> int:
     # into paper for that strategy instead of crash-looping the container.
     # The dashboard shows the fallback prominently.
     fallbacks: dict[str, str] = {}
-    for period, strategy in strategies.items():
+    for key, strategy in strategies.items():
         if strategy.is_live and not clob_ready:
-            fallbacks[period] = "missing_credentials"
+            fallbacks[key] = "missing_credentials"
             log.error(
                 "strategy.mode_fallback",
-                period=period, requested="live", actual="paper",
+                strategy=key, requested="live", actual="paper",
                 note="未配置 CLOB 凭证，已降级为纸面；配置后可在面板切换",
             )
             strategy.TRADING_MODE = "paper"
@@ -199,23 +206,48 @@ async def run() -> int:
             return build_broker(clone, db, clob)
         return factory
 
+    live_keys = [key for key, strategy in strategies.items() if strategy.is_live]
+    if live_keys:
+        log.warning(
+            "boot.live_strategies", strategies=live_keys,
+            note="这些策略会使用真实资金；环境变量 TRADING_MODE / "
+                 "TRADING_MODE_5M 会覆盖代码默认的 paper",
+        )
+
+    # One WebSocket per period, shared by the seven assets: their windows
+    # start and end on the same boundary, so a union subscription is both
+    # cheaper and no less fresh than one connection per strategy.
+    shared_cache: dict[str, PriceCache] = {}
+    shared_ws: dict[str, MarketWS] = {}
+    if settings.USE_MARKET_WS:
+        for period in PERIODS:
+            cache = PriceCache()
+            shared_cache[period] = cache
+            shared_ws[period] = MarketWS(cache)
+
     runtimes: dict[str, Runtime] = {}
     try:
-        for period, strategy in strategies.items():
+        for key, strategy in strategies.items():
             broker = build_broker(strategy, db, clob)
-            cache = PriceCache()
-            ws = MarketWS(cache) if strategy.USE_MARKET_WS else None
+            cache = shared_cache.get(strategy.PERIOD) or PriceCache()
+            ws = shared_ws.get(strategy.PERIOD)
             service = MarketService(pm, cache,
                                     autodetect_fee=strategy.FEE_RATE_AUTODETECT)
             runtime = Runtime(strategy, db, pm, service, broker, ws,
-                              broker_factory=_factory(strategy))
-            runtime.mode_fallback = fallbacks.get(period, "")
-            runtimes[period] = runtime
+                              broker_factory=_factory(strategy),
+                              ws_shared=ws is not None, pm_shared=True)
+            runtime.mode_fallback = fallbacks.get(key, "")
+            runtimes[key] = runtime
     except Exception as exc:  # noqa: BLE001
         log.error("boot.broker_failed", error=str(exc))
         return 2
 
-    research = ResearchService(settings, db, strategies)
+    # The research/agent pages remain BTC-scoped; they consume one Settings
+    # clone per period exactly as before.
+    btc_strategies = {
+        period: strategies[strategy_key("BTC", period)] for period in PERIODS
+    }
+    research = ResearchService(settings, db, btc_strategies)
     state = AppState(settings=settings, db=db, strategies=strategies,
                      runtimes=runtimes, research=research, clob=clob)
 
@@ -223,9 +255,9 @@ async def run() -> int:
     stop_event = asyncio.Event()
     _install_signal_handlers(loop, stop_event)
 
-    for period, runtime in runtimes.items():
+    for key, runtime in runtimes.items():
         await runtime.start()
-        log.info("strategy.started", period=period,
+        log.info("strategy.started", strategy=key, enabled=runtime.enabled,
                  mode=runtime.broker.mode)
 
     server = _start_dashboard(state)
@@ -252,11 +284,21 @@ async def run() -> int:
             await research.stop()
         except Exception:  # noqa: BLE001
             pass
-        for period, runtime in runtimes.items():
+        for key, runtime in runtimes.items():
             try:
                 await runtime.stop()
             except Exception as exc:  # noqa: BLE001
-                log.warning("shutdown.runtime_stop_failed", period=period, error=str(exc))
+                log.warning("shutdown.runtime_stop_failed", strategy=key,
+                            error=str(exc))
+        for period, ws in shared_ws.items():
+            try:
+                await ws.stop()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("shutdown.ws_stop_failed", period=period, error=str(exc))
+        try:
+            await pm.close()
+        except Exception:  # noqa: BLE001
+            pass
         if server is not None:
             server.should_exit = True
             await asyncio.sleep(0.3)

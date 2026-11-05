@@ -72,6 +72,8 @@ async def test_full_window_flow(tmp_path: Path):
         DATA_DIR=str(tmp_path), DATA_COLLECT_ENABLED=True, COLLECT_SEC=300,
         MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0, HEARTBEAT_S=3600,
         RESOLUTION_POLL_S=1,
+        ENTRY_WINDOW_SEC=60, ENTRY_THRESHOLD=0.90, CONFIRM_SEC=10,
+        MAX_ENTRY_PRICE=0.94,
     )
     db = DB(tmp_path / "flow.db")
     svc = FakeMarketService(lambda: clock[0])

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from src.config import Settings
+from src.config import Settings, strategy_key
 from src.infra.clock import utc_day
 from src.infra.logging import get_logger
 from src.persistence.db import DB
@@ -43,21 +43,28 @@ class RiskStatus:
 
 class RiskManager:
     def __init__(self, db: DB, settings: Settings, *, period: str = "15m",
-                 mode: str = "paper") -> None:
+                 mode: str = "paper", asset: str = "BTC",
+                 scope: str | None = None) -> None:
         self._db = db
         self._settings = settings
         self._period = period
+        self._asset = (asset or "BTC").upper()
         self._mode = mode
+        self._scope = scope or strategy_key(self._asset, period)
         self._pause_until = float(
             db.state_get(self._key(PAUSE_KEY), 0.0) or 0.0
         )
 
     def _key(self, name: str) -> str:
-        return f"{name}:{self._period}"
+        return f"{name}:{self._scope}"
 
     @property
     def period(self) -> str:
         return self._period
+
+    @property
+    def asset(self) -> str:
+        return self._asset
 
     @property
     def mode(self) -> str:
@@ -112,12 +119,14 @@ class RiskManager:
         day = utc_day(now)
         start = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
         trades = self._db.trades_between(start, start + 86400,
-                                         mode=self._mode, period=self._period)
+                                         mode=self._mode, period=self._period,
+                                         asset=self._asset)
         return sum(float(t.get("pnl") or 0) for t in trades
                    if t.get("status") in ("won", "lost", "void"))
 
     def consecutive_losses(self) -> int:
-        trades = self._db.all_settled_trades(mode=self._mode, period=self._period)
+        trades = self._db.all_settled_trades(mode=self._mode, period=self._period,
+                                             asset=self._asset)
         streak = 0
         for trade in reversed(trades):
             if trade.get("status") == "won":
@@ -127,7 +136,8 @@ class RiskManager:
         return streak
 
     def _settled_count(self) -> int:
-        return len(self._db.all_settled_trades(mode=self._mode, period=self._period))
+        return len(self._db.all_settled_trades(mode=self._mode, period=self._period,
+                                               asset=self._asset))
 
     # ── decision ──────────────────────────────────────────────────────────
 
@@ -189,6 +199,8 @@ class RiskManager:
         kill = self.killswitch
         return {
             "period": self._period,
+            "asset": self._asset,
+            "strategy": self._scope,
             "mode": self._mode,
             "killswitch": kill,
             "pause_until": self._pause_until,

@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from src.config import Settings
+from src.config import PERIODS, Settings
 from src.infra.logging import get_logger
 from src.persistence.db import DB
 from src.research.backtest import BacktestParams, run_backtest
@@ -59,9 +59,12 @@ class ResearchService:
                  strategies: Optional[dict[str, Settings]] = None) -> None:
         self.settings = settings
         self.db = db
-        # One Settings clone per strategy, shared with the trading runtimes so
-        # research and live/config always refer to the same parameters.
-        self.strategies = strategies or settings.strategy_settings()
+        # One Settings clone per period, shared with the trading runtimes so
+        # research and live/config always refer to the same parameters. The
+        # research pages remain BTC-scoped.
+        self.strategies = strategies or {
+            period: settings.for_strategy("BTC", period) for period in PERIODS
+        }
         self._job: Optional[Job] = None
         self._task: Optional[asyncio.Task] = None
         # A killed process leaves its row "running"; reconcile it so the UI

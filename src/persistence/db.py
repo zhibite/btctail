@@ -1,9 +1,9 @@
 """SQLite store for windows, signals, trades, settings and the event journal.
 
-Every market row is scoped by ``period`` ("15m" / "5m") because both
-strategies run in one process and their 15m and 5m windows can share the same
-slot number. Settings are scoped the same way, so each strategy carries its
-own runtime overrides.
+Every row is scoped by ``asset`` and ``period`` ("BTC" x "15m") because all
+seven assets and both periods run in one process and many of them share the
+same slot number. Settings are scoped by the strategy key ``ASSET:period``,
+so each strategy carries its own runtime overrides.
 """
 from __future__ import annotations
 
@@ -34,13 +34,14 @@ CREATE TABLE IF NOT EXISTS windows (
     resolved      TEXT DEFAULT '',
     resolved_at   REAL,
     created_at    REAL NOT NULL,
-    PRIMARY KEY (slot, period)
+    PRIMARY KEY (slot, period, asset)
 );
 
 CREATE TABLE IF NOT EXISTS signals (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     slot              INTEGER NOT NULL,
     period            TEXT NOT NULL,
+    asset             TEXT NOT NULL DEFAULT 'BTC',
     mode              TEXT NOT NULL,
     side              TEXT DEFAULT '',
     trigger_ts        REAL,
@@ -53,13 +54,14 @@ CREATE TABLE IF NOT EXISTS signals (
     skip_reason       TEXT DEFAULT '',
     created_at        REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_signals_slot ON signals(slot, period);
+CREATE INDEX IF NOT EXISTS idx_signals_slot ON signals(slot, period, asset);
 CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
 
 CREATE TABLE IF NOT EXISTS trades (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     slot          INTEGER NOT NULL,
     period        TEXT NOT NULL,
+    asset         TEXT NOT NULL DEFAULT 'BTC',
     mode          TEXT NOT NULL,
     side          TEXT NOT NULL,
     token_id      TEXT DEFAULT '',
@@ -82,11 +84,11 @@ CREATE TABLE IF NOT EXISTS trades (
     error         TEXT DEFAULT '',
     extra         TEXT DEFAULT '',
     created_at    REAL NOT NULL,
-    UNIQUE(slot, period, mode)
+    UNIQUE(slot, period, mode, asset)
 );
 CREATE INDEX IF NOT EXISTS idx_trades_entry ON trades(entry_ts);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
-CREATE INDEX IF NOT EXISTS idx_trades_period ON trades(period);
+CREATE INDEX IF NOT EXISTS idx_trades_period ON trades(period, asset);
 
 CREATE TABLE IF NOT EXISTS settings (
     scope      TEXT NOT NULL DEFAULT '15m',
@@ -148,6 +150,11 @@ class DB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._migrate_single_strategy_schema()
+        # Must run before the full schema is applied: an older database has
+        # `trades` without an `asset` column, and SCHEMA creates an index on
+        # it. The migration renames those tables first and then creates the
+        # new schema.
+        self._migrate_asset_schema()
         self._conn.executescript(SCHEMA)
         self._conn.commit()
 
@@ -190,6 +197,131 @@ class DB:
         except Exception as exc:  # noqa: BLE001
             log.error("db.migration_failed", error=str(exc))
 
+    def _migrate_asset_schema(self) -> None:
+        """Add the ``asset`` dimension to the period-scoped tables.
+
+        The previous schema keyed windows on (slot, period) and trades on
+        (slot, period, mode). With seven assets sharing a slot that is no
+        longer unique, so those three tables are rebuilt and their BTC rows
+        are preserved. Runtime settings scopes move from "15m" / "5m" to
+        "BTC:15m" / "BTC:5m".
+        """
+        try:
+            tables = {
+                row["name"] for row in self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            rebuild: list[str] = []
+            for name in ("windows", "signals", "trades"):
+                if name not in tables:
+                    continue
+                columns = {
+                    row["name"]: row for row in self._conn.execute(
+                        f"PRAGMA table_info({name})"
+                    )
+                }
+                if "asset" not in columns:
+                    rebuild.append(name)
+                    continue
+                if name == "windows":
+                    pk = {column for column, row in columns.items() if row["pk"]}
+                    if pk != {"slot", "period", "asset"}:
+                        rebuild.append(name)
+
+            if rebuild:
+                suffix = f"_legacy_asset_{int(time.time())}"
+                for name in rebuild:
+                    legacy = f"{name}{suffix}"
+                    self._conn.execute(f"ALTER TABLE {name} RENAME TO {legacy}")
+                    # Indexes keep their global names after a RENAME; drop
+                    # them so SCHEMA can recreate them on the new table.
+                    indexes = [
+                        row["name"] for row in self._conn.execute(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type='index' AND tbl_name=? "
+                            "AND name NOT LIKE 'sqlite_autoindex%'",
+                            (legacy,),
+                        )
+                    ]
+                    for index in indexes:
+                        self._conn.execute(f"DROP INDEX IF EXISTS {index}")
+                self._conn.executescript(SCHEMA)
+                for name in rebuild:
+                    legacy = f"{name}{suffix}"
+                    self._copy_legacy_table(name, legacy)
+                    self._conn.execute(f"DROP TABLE {legacy}")
+                log.warning(
+                    "db.asset_schema_migrated",
+                    tables=rebuild, suffix=suffix,
+                    note="旧库数据已保留，asset 统一记为 BTC",
+                )
+            else:
+                self._conn.executescript(SCHEMA)
+        except Exception as exc:  # noqa: BLE001
+            log.error("db.asset_migration_failed", error=str(exc))
+
+        self._migrate_legacy_scopes()
+
+    def _copy_legacy_table(self, name: str, legacy: str) -> None:
+        target = [row["name"] for row in self._conn.execute(f"PRAGMA table_info({name})")]
+        old = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({legacy})")}
+        expressions = []
+        for column in target:
+            if column in old:
+                expressions.append(column)
+            elif column == "asset":
+                expressions.append("'BTC'")
+            else:
+                expressions.append("NULL")
+        self._conn.execute(
+            f"INSERT INTO {name} ({','.join(target)}) "
+            f"SELECT {','.join(expressions)} FROM {legacy}"
+        )
+
+    def _migrate_legacy_scopes(self) -> None:
+        """Move period-only scopes / risk keys onto the BTC strategy key."""
+        try:
+            for old_scope, new_scope in (("15m", "BTC:15m"), ("5m", "BTC:5m")):
+                rows = self._conn.execute(
+                    "SELECT key, value, updated_at FROM settings WHERE scope=?",
+                    (old_scope,),
+                ).fetchall()
+                if rows:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO settings (scope, key, value, updated_at) "
+                        "VALUES (?,?,?,?)",
+                        [(new_scope, row["key"], row["value"], row["updated_at"])
+                         for row in rows],
+                    )
+                    self._conn.execute("DELETE FROM settings WHERE scope=?", (old_scope,))
+            for name in ("killswitch", "pause_until", "risk_streak_mark"):
+                for old_period, asset in (("15m", "BTC"), ("5m", "BTC")):
+                    old_key = f"{name}:{old_period}"
+                    new_key = f"{name}:{asset}:{old_period}"
+                    self._conn.execute(
+                        "UPDATE OR REPLACE state SET key=? WHERE key=?", (new_key, old_key)
+                    )
+            # The 7-asset rollout starts fully in paper. Apply that once to
+            # any saved per-strategy modes; later panel changes stick.
+            marker = "migration_all_paper_v1"
+            if not self.state_get(marker):
+                cur = self._conn.execute(
+                    "UPDATE settings SET value='paper', updated_at=? "
+                    "WHERE key='TRADING_MODE'",
+                    (time.time(),),
+                )
+                self.state_set(marker, time.time())
+                if cur.rowcount:
+                    log.warning(
+                        "db.all_paper_migrated",
+                        strategies=cur.rowcount,
+                        note="多币种上线：已保存的纸面/实盘模式统一改为纸面，可在面板重新切换",
+                    )
+                self._conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("db.scope_migration_failed", error=str(exc))
+
     # ── windows ───────────────────────────────────────────────────────────
 
     def upsert_window(self, market: MarketInfo) -> None:
@@ -198,7 +330,7 @@ class DB:
                 """INSERT INTO windows (slot, period, asset, slug, condition_id,
                        up_token, down_token, end_ts, tick_size, created_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(slot, period) DO UPDATE SET
+                   ON CONFLICT(slot, period, asset) DO UPDATE SET
                        slug=excluded.slug,
                        condition_id=excluded.condition_id,
                        up_token=excluded.up_token,
@@ -211,28 +343,35 @@ class DB:
             )
             self._conn.commit()
 
-    def set_window_resolution(self, slot: int, period: str, side: Side,
-                              resolved_at: float) -> None:
+    def set_window_resolution(self, slot: int, period: str, asset: str,
+                              side: Side, resolved_at: float) -> None:
         with self._lock:
             self._conn.execute(
-                "UPDATE windows SET resolved=?, resolved_at=? WHERE slot=? AND period=?",
-                (side.value, resolved_at, slot, period),
+                "UPDATE windows SET resolved=?, resolved_at=? "
+                "WHERE slot=? AND period=? AND asset=?",
+                (side.value, resolved_at, slot, period, asset.upper()),
             )
             self._conn.commit()
 
-    def get_window(self, slot: int, period: str = "15m") -> Optional[dict]:
+    def get_window(self, slot: int, period: str = "15m",
+                   asset: str = "BTC") -> Optional[dict]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM windows WHERE slot=? AND period=?", (slot, period)
+                "SELECT * FROM windows WHERE slot=? AND period=? AND asset=?",
+                (slot, period, asset.upper()),
             ).fetchone()
         return _row_to_dict(row)
 
-    def recent_windows(self, limit: int = 50, period: str | None = None) -> list[dict]:
-        sql = "SELECT * FROM windows"
+    def recent_windows(self, limit: int = 50, period: str | None = None,
+                       asset: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM windows WHERE 1=1"
         args: list[Any] = []
         if period:
-            sql += " WHERE period=?"
+            sql += " AND period=?"
             args.append(period)
+        if asset:
+            sql += " AND asset=?"
+            args.append(asset.upper())
         sql += " ORDER BY slot DESC LIMIT ?"
         args.append(limit)
         with self._lock:
@@ -248,6 +387,7 @@ class DB:
         period: str,
         mode: str,
         decision: str,
+        asset: str = "BTC",
         side: str = "",
         trigger_ts: float | None = None,
         trigger_price: float | None = None,
@@ -259,11 +399,11 @@ class DB:
     ) -> int:
         with self._lock:
             cur = self._conn.execute(
-                """INSERT INTO signals (slot, period, mode, side, trigger_ts,
+                """INSERT INTO signals (slot, period, asset, mode, side, trigger_ts,
                        trigger_price, trigger_remaining, confirm_due_ts,
                        confirm_ts, confirm_price, decision, skip_reason, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (slot, period, mode, side, trigger_ts, trigger_price,
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (slot, period, asset.upper(), mode, side, trigger_ts, trigger_price,
                  trigger_remaining, confirm_due_ts, confirm_ts, confirm_price,
                  decision, skip_reason, time.time()),
             )
@@ -271,7 +411,8 @@ class DB:
             return int(cur.lastrowid)
 
     def recent_signals(self, limit: int = 100, mode: str | None = None,
-                       period: str | None = None) -> list[dict]:
+                       period: str | None = None,
+                       asset: str | None = None) -> list[dict]:
         sql = "SELECT * FROM signals WHERE 1=1"
         args: list[Any] = []
         if mode:
@@ -280,6 +421,9 @@ class DB:
         if period:
             sql += " AND period=?"
             args.append(period)
+        if asset:
+            sql += " AND asset=?"
+            args.append(asset.upper())
         sql += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
         with self._lock:
@@ -288,11 +432,13 @@ class DB:
 
     # ── trades ────────────────────────────────────────────────────────────
 
-    def trade_exists(self, slot: int, mode: str, period: str = "15m") -> bool:
+    def trade_exists(self, slot: int, mode: str, period: str = "15m",
+                     asset: str = "BTC") -> bool:
         with self._lock:
             row = self._conn.execute(
-                "SELECT 1 FROM trades WHERE slot=? AND mode=? AND period=? LIMIT 1",
-                (slot, mode, period),
+                "SELECT 1 FROM trades WHERE slot=? AND mode=? AND period=? "
+                "AND asset=? LIMIT 1",
+                (slot, mode, period, asset.upper()),
             ).fetchone()
         return row is not None
 
@@ -313,21 +459,22 @@ class DB:
         fee_rate: float,
         stake: float,
         order_id: str,
+        asset: str = "BTC",
         status: str = "open",
         entry_ts: float | None = None,
         extra: dict | None = None,
     ) -> int:
         with self._lock:
             cur = self._conn.execute(
-                """INSERT INTO trades (slot, period, mode, side, token_id,
+                """INSERT INTO trades (slot, period, asset, mode, side, token_id,
                        condition_id, signal_price, entry_price, shares, cost,
                        fee, fee_rate, stake, order_id, status, entry_ts, extra,
                        created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(slot, period, mode) DO NOTHING""",
-                (slot, period, mode, side, token_id, condition_id, signal_price,
-                 entry_price, shares, cost, fee, fee_rate, stake, order_id,
-                 status, entry_ts or time.time(),
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(slot, period, mode, asset) DO NOTHING""",
+                (slot, period, asset.upper(), mode, side, token_id, condition_id,
+                 signal_price, entry_price, shares, cost, fee, fee_rate, stake,
+                 order_id, status, entry_ts or time.time(),
                  json.dumps(extra or {}, ensure_ascii=False), time.time()),
             )
             self._conn.commit()
@@ -362,12 +509,16 @@ class DB:
             )
             self._conn.commit()
 
-    def unredeemed_trades(self, period: str | None = None) -> list[dict]:
+    def unredeemed_trades(self, period: str | None = None,
+                          asset: str | None = None) -> list[dict]:
         sql = "SELECT * FROM trades WHERE status='won' AND redeem_status='needed'"
         args: list[Any] = []
         if period:
             sql += " AND period=?"
             args.append(period)
+        if asset:
+            sql += " AND asset=?"
+            args.append(asset.upper())
         sql += " ORDER BY entry_ts"
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
@@ -387,8 +538,8 @@ class DB:
             ).fetchone()
         return _row_to_dict(row)
 
-    def open_trades(self, mode: str | None = None,
-                    period: str | None = None) -> list[dict]:
+    def open_trades(self, mode: str | None = None, period: str | None = None,
+                    asset: str | None = None) -> list[dict]:
         sql = "SELECT * FROM trades WHERE status='open'"
         args: list[Any] = []
         if mode:
@@ -397,13 +548,17 @@ class DB:
         if period:
             sql += " AND period=?"
             args.append(period)
+        if asset:
+            sql += " AND asset=?"
+            args.append(asset.upper())
         sql += " ORDER BY slot"
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
         return _rows_to_dicts(rows)
 
     def recent_trades(self, limit: int = 100, mode: str | None = None,
-                      period: str | None = None) -> list[dict]:
+                      period: str | None = None,
+                      asset: str | None = None) -> list[dict]:
         sql = "SELECT * FROM trades WHERE 1=1"
         args: list[Any] = []
         if mode:
@@ -412,6 +567,9 @@ class DB:
         if period:
             sql += " AND period=?"
             args.append(period)
+        if asset:
+            sql += " AND asset=?"
+            args.append(asset.upper())
         sql += " ORDER BY entry_ts DESC LIMIT ?"
         args.append(limit)
         with self._lock:
@@ -419,7 +577,8 @@ class DB:
         return _rows_to_dicts(rows)
 
     def trades_between(self, start_ts: float, end_ts: float, mode: str | None = None,
-                       period: str | None = None) -> list[dict]:
+                       period: str | None = None,
+                       asset: str | None = None) -> list[dict]:
         sql = "SELECT * FROM trades WHERE entry_ts >= ? AND entry_ts < ?"
         args: list[Any] = [start_ts, end_ts]
         if mode:
@@ -428,13 +587,17 @@ class DB:
         if period:
             sql += " AND period=?"
             args.append(period)
+        if asset:
+            sql += " AND asset=?"
+            args.append(asset.upper())
         sql += " ORDER BY entry_ts"
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
         return _rows_to_dicts(rows)
 
     def all_settled_trades(self, mode: str | None = None,
-                           period: str | None = None) -> list[dict]:
+                           period: str | None = None,
+                           asset: str | None = None) -> list[dict]:
         sql = "SELECT * FROM trades WHERE status IN ('won','lost','void')"
         args: list[Any] = []
         if mode:
@@ -443,6 +606,9 @@ class DB:
         if period:
             sql += " AND period=?"
             args.append(period)
+        if asset:
+            sql += " AND asset=?"
+            args.append(asset.upper())
         sql += " ORDER BY entry_ts"
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()

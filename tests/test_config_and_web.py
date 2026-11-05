@@ -21,9 +21,10 @@ def test_validation_rejects_inconsistent_cap():
 
 def test_mode_defaults():
     settings = Settings()
-    assert settings.TRADING_MODE == "live"
+    # Everything, BTC included, starts in paper until promoted explicitly.
+    assert settings.TRADING_MODE == "paper"
     assert settings.TRADING_MODE_5M == "paper"
-    assert settings.for_period("15m").TRADING_MODE == "live"
+    assert settings.for_period("15m").TRADING_MODE == "paper"
     assert settings.for_period("5m").TRADING_MODE == "paper"
     # 5m sizing is 10 USDC for both the backtest and the live order.
     assert settings.STAKE_USD_5M == 10.0
@@ -31,6 +32,51 @@ def test_mode_defaults():
     five = settings.for_period("5m")
     assert five.STAKE_USD == 10.0
     assert five.ENTRY_NOTIONAL_USD == 10.0
+
+
+def test_documented_defaults_and_enabled_set():
+    settings = Settings()
+    btc15 = settings.for_strategy("BTC", "15m")
+    assert (btc15.ENTRY_WINDOW_SEC, btc15.ENTRY_THRESHOLD,
+            btc15.CONFIRM_SEC, btc15.MAX_ENTRY_PRICE) == (60, 0.94, 15, 0.96)
+    eth15 = settings.for_strategy("ETH", "15m")
+    assert (eth15.ENTRY_WINDOW_SEC, eth15.ENTRY_THRESHOLD,
+            eth15.CONFIRM_SEC, eth15.MAX_ENTRY_PRICE) == (45, 0.84, 10, 0.92)
+    doge5 = settings.for_strategy("DOGE", "5m")
+    assert (doge5.ENTRY_WINDOW_SEC, doge5.ENTRY_THRESHOLD,
+            doge5.CONFIRM_SEC, doge5.MAX_ENTRY_PRICE) == (25, 0.84, 2, 0.98)
+    all_settings = settings.strategy_settings()
+    assert len(all_settings) == 14
+    enabled = settings.enabled_strategy_settings()
+    assert set(enabled) == {"BTC:15m", "BTC:5m"}
+    for strategy in all_settings.values():
+        assert strategy.TRADING_MODE == "paper"
+        assert strategy.ENTRY_NOTIONAL_USD_PAPER == 10.0
+        assert strategy.ENTRY_NOTIONAL_USD_LIVE == 5.0
+        assert strategy.entry_notional_for("paper") == 10.0
+        assert strategy.entry_notional_for("live") == 5.0
+
+
+def test_mode_is_scoped_per_asset_and_period(tmp_path):
+    db = DB(tmp_path / "mode.db")
+    base = Settings()
+    strategies = base.strategy_settings()
+    eth5 = strategies["ETH:5m"]
+    runtime_config.save_mode(db, "ETH:5m", "live")
+    runtime_config.apply_mode_override(eth5, db, "ETH:5m")
+    assert eth5.TRADING_MODE == "live"
+    # BTC and ETH 15m remain untouched.
+    assert strategies["BTC:5m"].TRADING_MODE == "paper"
+    assert strategies["ETH:15m"].TRADING_MODE == "paper"
+    db.close()
+
+
+def test_enabled_strategies_env_override(monkeypatch):
+    monkeypatch.setenv("ENABLED_STRATEGIES", "BTC:15m,ETH:5m")
+    settings = Settings()
+    enabled = settings.enabled_strategy_settings()
+    assert set(enabled) == {"BTC:15m", "ETH:5m"}
+    assert enabled["ETH:5m"].ASSET == "ETH"
 
 
 def test_gtd_needs_five_shares():
@@ -110,7 +156,11 @@ class StubBroker:
 class StubRuntime:
     def __init__(self, settings: Settings, db: DB):
         self.settings = settings
-        self.risk = RiskManager(db, settings, period=settings.PERIOD, mode="paper")
+        self.key = f"{settings.ASSET}:{settings.PERIOD}"
+        self.asset = settings.ASSET
+        self.period = settings.PERIOD
+        self.risk = RiskManager(db, settings, period=settings.PERIOD,
+                                mode="paper", asset=settings.ASSET, scope=self.key)
         self.broker = StubBroker()
         self._started_at = time.time()
         self._last_balance_ts = time.time()
@@ -120,11 +170,15 @@ class StubRuntime:
         self.settings.TRADING_MODE = mode
         return True, ""
 
+    async def set_enabled(self, enabled):
+        self.settings.ENABLED = bool(enabled)
+
     def status(self, **kwargs):
         return {
             "app": {"mode": self.broker.mode, "paper": self.broker.mode == "paper",
-                    "uptime_s": 1.0, "mode_fallback": "",
-                    "period": self.settings.PERIOD, "asset": "BTC"},
+                    "uptime_s": 1.0, "mode_fallback": "", "key": self.key,
+                    "enabled": self.settings.ENABLED,
+                    "period": self.settings.PERIOD, "asset": self.settings.ASSET},
             "params": {}, "window": None, "strategy": None, "quote": None,
             "risk": self.risk.snapshot(), "balance": 1000.0,
             "stats": {"trades": 0}, "equity": [], "recent_trades": [],
@@ -142,11 +196,10 @@ class StubState:
         self.settings = Settings(WEB_PASSWORD="secret", WEB_USERNAME="admin",
                                  DATA_DIR=str(tmp_path))
         self.db = DB(tmp_path / "web.db")
-        self.strategies = {"15m": self.settings.for_period("15m"),
-                           "5m": self.settings.for_period("5m")}
+        self.strategies = self.settings.strategy_settings()
         self.runtimes = {
-            "15m": StubRuntime(self.strategies["15m"], self.db),
-            "5m": StubRuntime(self.strategies["5m"], self.db),
+            key: StubRuntime(strategy, self.db)
+            for key, strategy in self.strategies.items()
         }
         self.research = StubResearch()
         self.clob = None
@@ -166,7 +219,9 @@ def test_health_is_public(client):
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
-    assert set(body["strategies"]) == {"15m", "5m"}
+    assert "BTC:15m" in body["strategies"]
+    assert "ETH:5m" in body["strategies"]
+    assert len(body["strategies"]) == 14
 
 
 def test_status_requires_login_when_password_set(client):
@@ -177,7 +232,7 @@ def test_status_requires_login_when_password_set(client):
     assert response.status_code == 200
     status = client.get("/api/status")
     assert status.status_code == 200
-    assert len(status.json()["strategies"]) == 2
+    assert len(status.json()["strategies"]) == 14
 
 
 def test_config_is_scoped_per_strategy(client):
@@ -185,8 +240,8 @@ def test_config_is_scoped_per_strategy(client):
     client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
 
     payload = client.get("/api/config?strategy=5m").json()
-    assert payload["scope"] == "5m"
-    assert payload["values"]["MAX_ENTRY_PRICE"] == 0.92
+    assert payload["scope"] == "BTC:5m"
+    assert payload["values"]["MAX_ENTRY_PRICE"] == 0.90
 
     response = client.put("/api/config", json={
         "strategy": "5m", "values": {"MAX_ENTRY_PRICE": 0.5}
@@ -194,14 +249,38 @@ def test_config_is_scoped_per_strategy(client):
     assert response.status_code == 400
 
     response = client.put("/api/config", json={
-        "strategy": "5m", "values": {"MAX_ENTRY_PRICE": 0.93}
+        "strategy": "5m", "values": {"MAX_ENTRY_PRICE": 0.91}
     })
     assert response.status_code == 200
     assert response.json()["ok"] is True
 
     # 15m untouched
     fifteen = client.get("/api/config?strategy=15m").json()
-    assert fifteen["values"]["MAX_ENTRY_PRICE"] == 0.94
+    assert fifteen["values"]["MAX_ENTRY_PRICE"] == 0.96
+
+    # A different asset is a different scope.
+    eth = client.get("/api/config?strategy=ETH:15m").json()
+    assert eth["asset"] == "ETH"
+    assert eth["values"]["MAX_ENTRY_PRICE"] == 0.92
+    assert eth["overrides"] == {}
+
+
+def test_strategy_matrix_and_enable_toggle(client):
+    client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
+    matrix = client.get("/api/strategies").json()
+    assert matrix["assets"] == ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"]
+    assert len(matrix["strategies"]) == 14
+    eth = next(s for s in matrix["strategies"] if s["key"] == "ETH:15m")
+    assert eth["enabled"] is False
+    assert eth["recommended"]["threshold"] == 0.84
+
+    response = client.put("/api/config", json={
+        "strategy": "ETH:15m", "values": {"ENABLED": True}
+    })
+    assert response.status_code == 200
+    status = {s["app"]["key"]: s for s in client.get("/api/status").json()["strategies"]}
+    assert status["ETH:15m"]["app"]["enabled"] is True
+    assert status["BTC:15m"]["app"]["enabled"] is True
 
 
 def test_killswitch_is_per_strategy(client):
@@ -209,9 +288,9 @@ def test_killswitch_is_per_strategy(client):
     response = client.post("/api/control/killswitch",
                            json={"strategy": "5m", "reason": "test"})
     assert response.status_code == 200
-    status = {s["app"]["period"]: s for s in client.get("/api/status").json()["strategies"]}
-    assert status["5m"]["risk"]["killswitch"]["active"] is True
-    assert status["15m"]["risk"]["killswitch"]["active"] is False
+    status = {s["app"]["key"]: s for s in client.get("/api/status").json()["strategies"]}
+    assert status["BTC:5m"]["risk"]["killswitch"]["active"] is True
+    assert status["BTC:15m"]["risk"]["killswitch"]["active"] is False
     assert client.post("/api/control/release",
                        json={"strategy": "5m"}).status_code == 200
 
@@ -223,7 +302,7 @@ def test_pages_render(client):
 
     client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
     for path, marker in (
-        ("/", "双策略总览"),
+        ("/", "多币种尾盘总览"),
         ("/trades", "交易记录"),
         ("/config", "参数与风控"),
         ("/research", "参数 Agent"),
@@ -233,6 +312,10 @@ def test_pages_render(client):
         assert marker in page.text, path
         assert "/static/app.js" in page.text
         assert "{{NAV}}" not in page.text
+        if path == "/config":
+            for asset in ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"):
+                assert f'data-asset="{asset}"' in page.text
+            assert 'data-cfg-period="5m"' in page.text
 
 
 def test_all_pages_require_login(client):
@@ -254,9 +337,9 @@ def test_mode_endpoint_switches_strategy(client):
                            json={"strategy": "5m", "mode": "live"})
     assert response.status_code == 200
     assert response.json()["mode"] == "live"
-    status = {s["app"]["period"]: s for s in client.get("/api/status").json()["strategies"]}
-    assert status["5m"]["app"]["mode"] == "live"
-    assert status["15m"]["app"]["mode"] == "paper"
+    status = {s["app"]["key"]: s for s in client.get("/api/status").json()["strategies"]}
+    assert status["BTC:5m"]["app"]["mode"] == "live"
+    assert status["BTC:15m"]["app"]["mode"] == "paper"
 
 
 def test_empty_password_closes_dashboard(tmp_path):

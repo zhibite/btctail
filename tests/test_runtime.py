@@ -116,6 +116,10 @@ def build(tmp_path, quotes, broker=None, settings=None):
     settings = settings or Settings(
         DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
         MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
+        # Scenario values used by this module; the shipped defaults live in
+        # docs/optimal_parameters.md and are covered by test_config_and_web.
+        ENTRY_WINDOW_SEC=60, ENTRY_THRESHOLD=0.90, CONFIRM_SEC=10,
+        MAX_ENTRY_PRICE=0.94,
     )
     db = DB(tmp_path / "rt.db")
     market = make_market()
@@ -232,6 +236,8 @@ async def test_voided_market_settles_as_void(tmp_path):
         settings=Settings(
             DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
             MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0, SETTLE_TIMEOUT_S=1,
+            ENTRY_WINDOW_SEC=60, ENTRY_THRESHOLD=0.90, CONFIRM_SEC=10,
+            MAX_ENTRY_PRICE=0.94,
         ),
     )
     set_clock(runtime, END - 50)
@@ -256,6 +262,8 @@ async def test_gtd_fills_at_the_signal_price_as_maker(tmp_path):
     settings = Settings(
         DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
         MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
+        ENTRY_WINDOW_SEC=60, ENTRY_THRESHOLD=0.90, CONFIRM_SEC=10,
+        MAX_ENTRY_PRICE=0.94,
         ENTRY_ORDER_TYPE="gtd", ENTRY_NOTIONAL_USD=10, GTD_FILL_TIMEOUT_S=0.5,
         MAKER_FEE_RATE=0.0,
     )
@@ -286,6 +294,8 @@ async def test_gtd_unfilled_falls_back_to_fak(tmp_path):
     settings = Settings(
         DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
         MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
+        ENTRY_WINDOW_SEC=60, ENTRY_THRESHOLD=0.90, CONFIRM_SEC=10,
+        MAX_ENTRY_PRICE=0.94,
         ENTRY_ORDER_TYPE="gtd", ENTRY_NOTIONAL_USD=10, GTD_FILL_TIMEOUT_S=0.5,
         ENTRY_FALLBACK_FAK=True,
     )
@@ -319,6 +329,36 @@ async def test_set_mode_refused_with_open_position(tmp_path):
     ok, message = runtime.set_mode("live")
     assert ok is False
     assert "未结算" in message
+
+
+async def test_live_mode_uses_the_live_notional(tmp_path):
+    broker = FakeBroker()
+    broker.mode = "live"
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 50, 0.90), quote(END - 40, 0.93), quote(END - 40, 0.93)],
+        broker=broker,
+    )
+    assert runtime.settings.ENTRY_NOTIONAL_USD_PAPER == 10.0
+    assert runtime.settings.ENTRY_NOTIONAL_USD_LIVE == 5.0
+    set_clock(runtime, END - 50)
+    await runtime._maybe_refresh_quote(aw, END - 50)
+    set_clock(runtime, END - 40)
+    await runtime._maybe_refresh_quote(aw, END - 40)
+    assert broker.calls and broker.calls[0]["stake"] == pytest.approx(5.0)
+
+
+async def test_disabled_strategy_does_not_open_a_window(tmp_path):
+    runtime, db, aw, svc, pm = build(tmp_path, [quote(END - 50, 0.92)])
+    runtime.active = None
+    await runtime.set_enabled(False)
+    await runtime._tick(END - 100)
+    assert runtime.active is None
+    assert svc.fetches == 0
+    await runtime.set_enabled(True)
+    await runtime._tick(END - 100)
+    assert runtime.active is not None
+    if runtime.active.discovery_task is not None:
+        await runtime.active.discovery_task
 
 
 async def test_set_mode_switches_broker_and_risk(tmp_path):

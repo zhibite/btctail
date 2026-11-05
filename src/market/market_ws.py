@@ -62,7 +62,11 @@ class MarketWS:
 
     def __init__(self, cache: PriceCache) -> None:
         self.cache = cache
-        self._tokens: set[str] = set()
+        # One MarketWS is shared by every strategy of the same period, so the
+        # watch set is the union of each strategy's tokens. Keyed by strategy
+        # key ("BTC:15m"), which lets one asset refresh its window without
+        # dropping the tokens another strategy still needs.
+        self._owned: dict[str, set[str]] = {}
         self._ws: Any = None
         self._send_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -84,25 +88,48 @@ class MarketWS:
 
         return time.time() - self._last_message_ts
 
-    def watch(self, token_ids: list[str]) -> None:
-        """Replace the watch set with the current window's tokens.
+    @property
+    def _tokens(self) -> set[str]:
+        union: set[str] = set()
+        for tokens in self._owned.values():
+            union |= tokens
+        return union
 
-        The cache is pruned for dropped tokens and events for unknown tokens
-        are ignored, so memory and bandwidth stay bounded to one window no
-        matter how many windows the process has seen.
+    def watch(self, token_ids: list[str], owner: str = "default") -> None:
+        """Replace one strategy's watch set with its current window tokens.
+
+        All strategies of the same period share one WebSocket; ``owner`` is
+        the strategy key. The wire subscription is the union of every owner's
+        tokens. The cache is pruned for tokens no owner needs any more, so
+        memory and bandwidth stay bounded to the live windows.
         """
         wanted = {t for t in token_ids if t}
-        if wanted == self._tokens:
+        if self._owned.get(owner, set()) == wanted:
             return
-        dropped = self._tokens - wanted
+        before = self._tokens
+        self._owned[owner] = wanted
+        after = self._tokens
+        dropped = before - after
         if dropped:
             self.cache.clear(sorted(dropped))
-        self._tokens = wanted
         if self._connected and self._ws is not None:
-            asyncio.create_task(self._safe_send(self._ws, sorted(wanted)))
+            asyncio.create_task(self._safe_send(self._ws, sorted(after)))
 
     # Backwards-compatible alias.
     subscribe = watch
+
+    def unwatch(self, owner: str) -> None:
+        """Drop a strategy's tokens (used when it is disabled)."""
+        if owner not in self._owned:
+            return
+        before = self._tokens
+        self._owned.pop(owner, None)
+        after = self._tokens
+        dropped = before - after
+        if dropped:
+            self.cache.clear(sorted(dropped))
+        if self._connected and self._ws is not None:
+            asyncio.create_task(self._safe_send(self._ws, sorted(after)))
 
     async def start(self) -> None:
         if self._running:

@@ -23,7 +23,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from src.config import Settings
+from src.config import (
+    ASSET_ORDER,
+    PERIODS,
+    RECOMMENDED_PARAMS,
+    RESEARCHED_ASSETS,
+    Settings,
+    parse_strategy_key,
+    strategy_key,
+)
 from src.infra.logging import get_logger
 from src.persistence.db import DB, compute_stats, equity_curve
 from src.web import auth, runtime_config
@@ -91,21 +99,56 @@ def _runtimes() -> dict:
     return _state().runtimes
 
 
-def _runtime(period: Optional[str]) -> Any:
+def _runtime(value: Optional[str]) -> Any:
     runtimes = _runtimes()
-    if not period:
-        # Default to the 15m strategy when only one exists.
-        period = "15m" if "15m" in runtimes else next(iter(runtimes), "")
-    runtime = runtimes.get(period)
+    try:
+        asset, period = parse_strategy_key(value or "BTC:15m")
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"未知策略 {value}") from None
+    key = strategy_key(asset, period)
+    runtime = runtimes.get(key)
+    if runtime is None and (not value or value.strip() in ("15m", "5m")):
+        # Legacy single-strategy deployments may key their runtimes by
+        # period. Never fall back for an explicit ASSET:period request.
+        runtime = runtimes.get(period)
     if runtime is None:
-        raise HTTPException(status_code=404, detail=f"策略 {period} 未启用")
+        raise HTTPException(status_code=404, detail=f"策略 {key} 未启用")
     return runtime
+
+
+def _strategy_meta() -> list[dict]:
+    out = []
+    for asset in ASSET_ORDER:
+        for period in PERIODS:
+            key = strategy_key(asset, period)
+            runtime = _runtimes().get(key)
+            recommended = RECOMMENDED_PARAMS[(asset, period)]
+            out.append({
+                "key": key,
+                "asset": asset,
+                "period": period,
+                "label": f"{asset} {period}",
+                "enabled": bool(getattr(runtime.settings, "ENABLED", True))
+                if runtime is not None else False,
+                "running": runtime is not None,
+                "mode": runtime.broker.mode if runtime is not None else "",
+                "researched": asset in RESEARCHED_ASSETS,
+                "recommended": recommended,
+            })
+    return out
 
 
 def _strategies_payload() -> list[dict]:
     return [
-        {"period": period, "label": f"BTC {period}", "mode": rt.broker.mode}
-        for period, rt in _runtimes().items()
+        {
+            "key": key,
+            "asset": rt.settings.ASSET,
+            "period": rt.settings.PERIOD,
+            "label": f"{rt.settings.ASSET} {rt.settings.PERIOD}",
+            "mode": rt.broker.mode,
+            "enabled": bool(getattr(rt.settings, "ENABLED", True)),
+        }
+        for key, rt in _runtimes().items()
     ]
 
 
@@ -287,11 +330,14 @@ async def api_health() -> dict:
     return {
         "ok": bool(runtimes),
         "strategies": {
-            period: {
+            key: {
+                "asset": rt.settings.ASSET,
+                "period": rt.settings.PERIOD,
+                "enabled": bool(getattr(rt.settings, "ENABLED", True)),
                 "mode": rt.broker.mode,
                 "uptime_s": now - rt._started_at,
             }
-            for period, rt in runtimes.items()
+            for key, rt in runtimes.items()
         },
         "ts": now,
     }
@@ -315,21 +361,34 @@ async def api_status(_: None = Depends(_require_auth)) -> dict:
     }
 
 
+@app.get("/api/strategies")
+async def api_strategies(_: None = Depends(_require_auth)) -> dict:
+    """Asset/period matrix for the config page (available even when idle)."""
+    return {
+        "assets": list(ASSET_ORDER),
+        "periods": list(PERIODS),
+        "researched": sorted(RESEARCHED_ASSETS),
+        "strategies": _strategy_meta(),
+    }
+
+
 @app.get("/api/trades")
 async def api_trades(
     limit: int = Query(200, ge=1, le=2000),
     mode: Optional[str] = Query(None, pattern="^(paper|live)$"),
     period: Optional[str] = Query(None, pattern="^(15m|5m)$"),
+    asset: Optional[str] = Query(None),
     _: None = Depends(_require_auth),
 ) -> dict:
     db = _db()
-    trades = db.recent_trades(limit=limit, mode=mode, period=period)
-    settled = db.all_settled_trades(mode=mode, period=period)
+    asset = asset.upper() if asset else None
+    trades = db.recent_trades(limit=limit, mode=mode, period=period, asset=asset)
+    settled = db.all_settled_trades(mode=mode, period=period, asset=asset)
     return {
         "trades": trades,
         "stats": compute_stats(settled),
         "equity": equity_curve(settled),
-        "unredeemed": db.unredeemed_trades(period),
+        "unredeemed": db.unredeemed_trades(period, asset),
     }
 
 
@@ -338,9 +397,13 @@ async def api_signals(
     limit: int = Query(200, ge=1, le=2000),
     mode: Optional[str] = Query(None, pattern="^(paper|live)$"),
     period: Optional[str] = Query(None, pattern="^(15m|5m)$"),
+    asset: Optional[str] = Query(None),
     _: None = Depends(_require_auth),
 ) -> dict:
-    return {"signals": _db().recent_signals(limit=limit, mode=mode, period=period)}
+    return {"signals": _db().recent_signals(
+        limit=limit, mode=mode, period=period,
+        asset=asset.upper() if asset else None,
+    )}
 
 
 @app.get("/api/events")
@@ -356,13 +419,21 @@ async def api_events(
 async def api_wallet(_: str = Depends(_require_login)) -> dict:
     state = _state()
     balances = {}
-    for period, rt in state.runtimes.items():
+    paper_balance: Any = ...
+    for key, rt in state.runtimes.items():
         try:
-            balances[period] = await rt.broker.balance()
+            if rt.broker.mode == "paper":
+                # All paper strategies share one simulated wallet; query it
+                # once instead of fourteen times.
+                if paper_balance is ...:
+                    paper_balance = await rt.broker.balance()
+                balances[key] = paper_balance
+            else:
+                balances[key] = await rt.broker.balance()
         except Exception:  # noqa: BLE001
-            balances[period] = None
+            balances[key] = None
     return {
-        "modes": {period: rt.broker.mode for period, rt in state.runtimes.items()},
+        "modes": {key: rt.broker.mode for key, rt in state.runtimes.items()},
         "balances": balances,
         "funder": getattr(state.clob, "funder_address", "") if state.clob else "",
         "unredeemed": state.db.unredeemed_trades(),
@@ -375,11 +446,13 @@ async def api_wallet(_: str = Depends(_require_login)) -> dict:
 
 @app.get("/api/config")
 async def api_get_config(
-    strategy: Optional[str] = Query(None, pattern="^(15m|5m)$"),
+    strategy: Optional[str] = Query(None),
     _: str = Depends(_require_login),
 ) -> dict:
     runtime = _runtime(strategy)
-    return runtime_config.payload(runtime.settings, _db(), runtime.settings.PERIOD)
+    key = getattr(runtime, "key", strategy_key(runtime.settings.ASSET,
+                                               runtime.settings.PERIOD))
+    return runtime_config.payload(runtime.settings, _db(), key)
 
 
 class ConfigPayload(BaseModel):
@@ -393,26 +466,38 @@ async def api_update_config(
     _: str = Depends(_require_login),
 ) -> dict:
     runtime = _runtime(payload.strategy)
-    period = runtime.settings.PERIOD
-    ok, errors, applied = runtime_config.update(runtime.settings, _db(), period,
+    key = getattr(runtime, "key", strategy_key(runtime.settings.ASSET,
+                                               runtime.settings.PERIOD))
+    was_enabled = bool(getattr(runtime.settings, "ENABLED", True))
+    ok, errors, applied = runtime_config.update(runtime.settings, _db(), key,
                                                 payload.values)
     if not ok:
         raise HTTPException(status_code=400, detail={"errors": errors})
-    log.info("config.updated", period=period, keys=list(applied), values=applied)
-    _db().add_event("INFO", "config.updated", {"period": period, "values": applied})
+    # Only touch the window lifecycle when the switch actually changed; a
+    # plain parameter save must not reopen the in-flight window.
+    if ("ENABLED" in applied and hasattr(runtime, "set_enabled")
+            and bool(applied["ENABLED"]) != was_enabled):
+        await runtime.set_enabled(bool(applied["ENABLED"]))
+    log.info("config.updated", strategy=key, keys=list(applied), values=applied)
+    _db().add_event("INFO", "config.updated", {"strategy": key, "values": applied})
     return {"ok": True,
-            "values": runtime_config.payload(runtime.settings, _db(), period)["values"]}
+            "values": runtime_config.payload(runtime.settings, _db(), key)["values"]}
 
 
 @app.post("/api/config/reset")
 async def api_reset_config(
-    strategy: Optional[str] = Query(None, pattern="^(15m|5m)$"),
+    strategy: Optional[str] = Query(None),
     _: str = Depends(_require_login),
 ) -> dict:
     runtime = _runtime(strategy)
-    period = runtime.settings.PERIOD
-    runtime_config.reset(runtime.settings, _db(), period)
-    _db().add_event("INFO", "config.reset", {"period": period})
+    key = getattr(runtime, "key", strategy_key(runtime.settings.ASSET,
+                                               runtime.settings.PERIOD))
+    was_enabled = bool(getattr(runtime.settings, "ENABLED", True))
+    runtime_config.reset(runtime.settings, _db(), key)
+    if (hasattr(runtime, "set_enabled")
+            and bool(runtime.settings.ENABLED) != was_enabled):
+        await runtime.set_enabled(runtime.settings.ENABLED)
+    _db().add_event("INFO", "config.reset", {"strategy": key})
     return {"ok": True}
 
 
@@ -428,11 +513,15 @@ class ControlPayload(BaseModel):
 def _targets(strategy: str) -> list:
     runtimes = _runtimes()
     if strategy in ("", "all", None):
-        return list(runtimes.values())
-    runtime = runtimes.get(strategy)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail=f"策略 {strategy} 未启用")
-    return [runtime]
+        enabled = [rt for rt in runtimes.values()
+                   if getattr(rt.settings, "ENABLED", True)]
+        return enabled or list(runtimes.values())
+    return [_runtime(strategy)]
+
+
+def _runtime_key(runtime: Any) -> str:
+    return getattr(runtime, "key", strategy_key(runtime.settings.ASSET,
+                                                runtime.settings.PERIOD))
 
 
 @app.post("/api/control/killswitch")
@@ -444,9 +533,10 @@ async def api_killswitch(
     result = {}
     for rt in _targets(payload.strategy):
         info = rt.risk.engage_killswitch(payload.reason or "手动停止")
+        key = _runtime_key(rt)
         state.db.add_event("WARNING", "control.killswitch",
-                           {"period": rt.settings.PERIOD, **info})
-        result[rt.settings.PERIOD] = info
+                           {"strategy": key, **info})
+        result[key] = info
     return {"ok": True, "killswitch": result}
 
 
@@ -459,9 +549,10 @@ async def api_release(
     result = {}
     for rt in _targets(payload.strategy):
         info = rt.risk.release_killswitch()
+        key = _runtime_key(rt)
         state.db.add_event("INFO", "control.release",
-                           {"period": rt.settings.PERIOD, **info})
-        result[rt.settings.PERIOD] = info
+                           {"strategy": key, **info})
+        result[key] = info
     return {"ok": True, "killswitch": result}
 
 
@@ -477,10 +568,10 @@ async def api_set_mode(payload: ModePayload,
     ok, message = runtime.set_mode(payload.mode)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
-    period = runtime.settings.PERIOD
-    runtime_config.save_mode(_db(), period, payload.mode)
+    key = _runtime_key(runtime)
+    runtime_config.save_mode(_db(), key, payload.mode)
     _db().add_event("INFO", "control.mode",
-                    {"period": period, "mode": payload.mode})
+                    {"strategy": key, "mode": payload.mode})
     return {"ok": True, "mode": runtime.broker.mode}
 
 
@@ -496,10 +587,11 @@ async def api_pause(payload: PausePayload, _: str = Depends(_require_login)) -> 
     result = {}
     for rt in _targets(payload.strategy):
         rt.risk.set_pause(payload.minutes * 60, payload.reason)
+        key = _runtime_key(rt)
         state.db.add_event("WARNING", "control.pause",
-                           {"period": rt.settings.PERIOD,
+                           {"strategy": key,
                             "minutes": payload.minutes, "reason": payload.reason})
-        result[rt.settings.PERIOD] = rt.risk.pause_until
+        result[key] = rt.risk.pause_until
     return {"ok": True, "pause_until": result}
 
 
@@ -646,14 +738,17 @@ class ApplyPayload(BaseModel):
 async def api_research_apply(payload: ApplyPayload,
                              _: str = Depends(_require_login)) -> dict:
     runtime = _runtime(payload.strategy)
-    period = runtime.settings.PERIOD
-    ok, errors, applied = runtime_config.update(runtime.settings, _db(), period,
+    key = _runtime_key(runtime)
+    ok, errors, applied = runtime_config.update(runtime.settings, _db(), key,
                                                 payload.values)
     if not ok:
         raise HTTPException(status_code=400, detail={"errors": errors})
+    if "ENABLED" in applied and hasattr(runtime, "set_enabled"):
+        await runtime.set_enabled(bool(applied["ENABLED"]))
     _db().add_event("INFO", "research.applied",
-                    {"period": period, "values": applied})
-    return {"ok": True, "applied": applied, "period": period}
+                    {"strategy": key, "values": applied})
+    return {"ok": True, "applied": applied, "strategy": key,
+            "period": runtime.settings.PERIOD}
 
 
 @app.exception_handler(HTTPException)

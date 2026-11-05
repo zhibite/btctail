@@ -10,7 +10,8 @@ Guardrails enforced here (not just in the prompt):
   * a hard cap on backtests per run (AGENT_MAX_BACKTESTS)
   * `finalize` is rejected unless the exact parameter set was already
     validated on a held-out date range
-  * only keys in ``config.TUNABLE_SPECS`` may appear in the proposal
+  * only agent-tunable keys (``TUNABLE_SPECS`` minus lifecycle switches)
+    may appear in the proposal
   * the final proposal is advisory -- applying it is a separate, explicit
     dashboard action
 
@@ -29,6 +30,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from src.config import TUNABLE_SPECS, Settings
+
+# Lifecycle switches are panel-only. The tuning agent may propose numeric
+# strategy/execution parameters, never "disable this strategy".
+AGENT_TUNABLE_KEYS = tuple(
+    key for key in TUNABLE_SPECS if key != "ENABLED"
+)
 from src.infra.logging import get_logger
 from src.research.backtest import BacktestParams, run_backtest
 from src.research.dataset import dataset_summary, live_dataset_summary
@@ -227,7 +234,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "finalize",
         "description": (
             "提交最终建议并结束本次研究。parameters 只能包含可调参数"
-            f"（{', '.join(sorted(TUNABLE_SPECS))}）。"
+            f"（{', '.join(sorted(AGENT_TUNABLE_KEYS))}）。"
             "apply_candidate 需要样本外证据：该参数要么来自 run_search 的验证集结果，"
             "要么已被 validate_params 在一个全新的日期区间验证过（≥5 笔）。"
         ),
@@ -311,7 +318,7 @@ class TuningAgent:
             "start_date": start_date,
             "end_date": end_date,
             "max_iterations": iterations,
-            "tunable_keys": sorted(TUNABLE_SPECS),
+            "tunable_keys": sorted(AGENT_TUNABLE_KEYS),
             "current_live_params": {
                 **self.settings.strategy_params(),
                 "stake": self.settings.ENTRY_NOTIONAL_USD,
@@ -638,7 +645,7 @@ class TuningAgent:
         raw_params = payload.get("parameters") or {}
         # Accept either the documented UPPER_CASE keys or lowercase ones.
         params = {str(key).upper(): value for key, value in raw_params.items()}
-        unknown = [key for key in params if key not in TUNABLE_SPECS]
+        unknown = [key for key in params if key not in AGENT_TUNABLE_KEYS]
         if unknown:
             return f"parameters 含不可调字段: {unknown}", True
 
