@@ -179,7 +179,11 @@ class StubRuntime:
                     "uptime_s": 1.0, "mode_fallback": "", "key": self.key,
                     "enabled": self.settings.ENABLED,
                     "period": self.settings.PERIOD, "asset": self.settings.ASSET},
-            "params": {"exec_slippage": self.settings.EXEC_SLIPPAGE},
+            "params": {
+                "exec_slippage": self.settings.EXEC_SLIPPAGE,
+                "entry_notional_paper": self.settings.ENTRY_NOTIONAL_USD_PAPER,
+                "entry_notional_live": self.settings.ENTRY_NOTIONAL_USD_LIVE,
+            },
             "window": None, "strategy": None, "quote": None,
             "risk": self.risk.snapshot(), "balance": 1000.0,
             "stats": {"trades": 0}, "equity": [], "recent_trades": [],
@@ -292,10 +296,17 @@ def test_shared_config_applies_to_every_strategy(client):
     assert shared["scope"] == "shared"
     assert "EXEC_SLIPPAGE" in shared["specs"]
     assert "DAILY_LOSS_LIMIT_USD" in shared["specs"]
+    assert "ENTRY_NOTIONAL_USD_PAPER" in shared["specs"]
+    assert "ENTRY_NOTIONAL_USD_LIVE" in shared["specs"]
     assert "ENTRY_WINDOW_SEC" not in shared["specs"]
 
     response = client.put("/api/config/shared", json={
-        "values": {"EXEC_SLIPPAGE": 0.02, "DAILY_LOSS_LIMIT_USD": 25},
+        "values": {
+            "EXEC_SLIPPAGE": 0.02,
+            "DAILY_LOSS_LIMIT_USD": 25,
+            "ENTRY_NOTIONAL_USD_PAPER": 12,
+            "ENTRY_NOTIONAL_USD_LIVE": 6,
+        },
     })
     assert response.status_code == 200
     assert response.json()["ok"] is True
@@ -305,6 +316,8 @@ def test_shared_config_applies_to_every_strategy(client):
     for item in strategies:
         assert item["params"]["exec_slippage"] == 0.02
         assert item["risk"]["daily_limit"] == 25
+        assert item["params"]["entry_notional_paper"] == 12
+        assert item["params"]["entry_notional_live"] == 6
 
     response = client.put("/api/config/shared", json={
         "values": {"TAKER_FEE_RATE": 0.9},
@@ -349,6 +362,7 @@ def test_pages_render(client):
             assert 'id="shared-fields"' in page.text
             assert "策略列表" in page.text
             assert "共有参数" in page.text
+            assert "关于这些参数" not in page.text
         if path == "/":
             assert 'id="strategy-grid"' in page.text
             assert "策略说明" not in page.text

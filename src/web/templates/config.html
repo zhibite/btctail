@@ -35,7 +35,7 @@
     <div class="card">
       <div class="card-head">
         <div class="card-title">策略列表</div>
-        <span class="small muted">启用 · 模式 · 窗口 · 阈值 · 确认 · 上限 · 单笔金额</span>
+        <span class="small muted">启用 · 模式 · 窗口 · 阈值 · 确认 · 上限</span>
       </div>
       <div class="table-wrap" id="strategy-table">
         <div class="muted small center" style="padding:20px">加载中…</div>
@@ -78,26 +78,14 @@
     </div>
 
     <details class="card" style="margin-top:20px">
-      <summary style="cursor:pointer;font-weight:600">共有参数（执行 / 风控，作用于全部策略）</summary>
+      <summary style="cursor:pointer;font-weight:600">共有参数（金额 / 执行 / 风控，作用于全部策略）</summary>
       <div class="mode-bar" style="margin-top:14px">
         <button class="btn small" id="shared-save">保存共有参数</button>
-        <span class="small muted">滑点、下单方式、费率、日亏损、连亏暂停等；14 个策略共用这一套值</span>
+        <span class="small muted">纸面/实盘单笔金额、滑点、下单方式、费率、日亏损、连亏暂停等；14 个策略共用这一套值</span>
       </div>
       <div id="shared-fields" class="form-grid cols-2" style="margin-top:12px"></div>
     </details>
 
-    <div class="card" style="margin-top:20px">
-      <div class="card-head"><div class="card-title">关于这些参数</div></div>
-      <div class="md">
-        <ul>
-          <li><b>启用</b>：关闭后不再发现新市场或开仓；已有持仓仍会结算。</li>
-          <li><b>模式</b>：每个币种 × 周期独立选择纸面或实盘；切换时若有未结算持仓会被拒绝。</li>
-          <li><b>窗口 / 阈值 / 确认 / 上限</b>：推荐值来自 <span class="mono">docs/optimal_parameters.md</span> 的稳健版回测；XRP 暂无独立回测，先用保守通用参数。</li>
-          <li><b>单笔金额</b>：纸面默认 10 USDC、实盘默认 5 USDC，均可逐策略修改。GTD 会按限价换算成股数（最少 5 股）。</li>
-          <li><b>风控</b>：日亏损、连亏、暂停按「币种 + 周期 + 模式」独立计数。</li>
-        </ul>
-      </div>
-    </div>
   </div>
 </body>
 </html>

@@ -24,8 +24,8 @@ from src.config import (
 
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 MODE_KEY = "TRADING_MODE"   # persisted per scope; not agent-tunable
-SHARED_SCOPE = "shared"     # execution / risk parameters common to all strategies
-SHARED_GROUPS = ("execution", "risk")
+SHARED_SCOPE = "shared"     # sizing / execution / risk parameters common to all strategies
+SHARED_GROUPS = ("sizing", "execution", "risk")
 SHARED_KEYS = tuple(
     key for key, spec in TUNABLE_SPECS.items()
     if spec.get("group") in SHARED_GROUPS
@@ -90,6 +90,8 @@ def apply_shared_overrides(settings: Settings, db) -> Settings:
             setattr(settings, key, coerce(key, raw))
         except (TypeError, ValueError):
             continue
+    # Backtest sizing follows the shared paper budget.
+    settings.ENTRY_NOTIONAL_USD = float(settings.ENTRY_NOTIONAL_USD_PAPER)
     return settings
 
 
@@ -140,6 +142,9 @@ def update_shared(runtimes: dict[str, Any], db, values: dict[str, Any]
     for runtime in runtimes.values():
         for name, value in coerced.items():
             setattr(runtime.settings, name, value)
+        runtime.settings.ENTRY_NOTIONAL_USD = float(
+            runtime.settings.ENTRY_NOTIONAL_USD_PAPER
+        )
     db.settings_set_many({k: str(v) for k, v in coerced.items()},
                          scope=SHARED_SCOPE)
     # Remove stale per-strategy copies so the shared value is the only

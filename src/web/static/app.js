@@ -566,8 +566,6 @@
     { field: "ENTRY_THRESHOLD", param: "threshold", label: "阈值" },
     { field: "CONFIRM_SEC", param: "confirm_sec", label: "确认(s)" },
     { field: "MAX_ENTRY_PRICE", param: "max_entry_price", label: "上限" },
-    { field: "ENTRY_NOTIONAL_USD_PAPER", param: "entry_notional_paper", label: "纸面U" },
-    { field: "ENTRY_NOTIONAL_USD_LIVE", param: "entry_notional_live", label: "实盘U" },
   ];
 
   const configPage = {
@@ -682,10 +680,9 @@
       const rec = meta.recommended;
       MAIN_FIELDS.forEach((f) => {
         const input = tr.querySelector("[data-field='" + f.field + "']");
-        if (!input) return;
-        if (f.param === "entry_notional_paper") input.value = 10;
-        else if (f.param === "entry_notional_live") input.value = 5;
-        else if (rec[f.param] !== undefined && rec[f.param] !== null) input.value = rec[f.param];
+        if (input && rec[f.param] !== undefined && rec[f.param] !== null) {
+          input.value = rec[f.param];
+        }
       });
       toast(key + " 已填入 docs 推荐值，点「保存」生效", "ok");
     },
@@ -753,7 +750,7 @@
       if (!target) return;
       try {
         const cfg = await api("/api/config/shared");
-        const groups = [["execution", "执行"], ["risk", "风控"]];
+        const groups = [["sizing", "单笔金额"], ["execution", "执行"], ["risk", "风控"]];
         let html = "";
         groups.forEach(([group, label]) => {
           const items = Object.entries(cfg.specs).filter(([, spec]) => spec.group === group);
