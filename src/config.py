@@ -56,7 +56,13 @@ RECOMMENDED_PARAMS: dict[tuple[str, str], dict[str, float]] = {
     ("DOGE", "15m"): {"entry_window_sec": 60, "threshold": 0.86,
                       "confirm_sec": 10, "max_entry_price": 0.95},
     ("DOGE", "5m"): {"entry_window_sec": 25, "threshold": 0.84,
-                     "confirm_sec": 2, "max_entry_price": 0.98},
+                     "confirm_sec": 2, "max_entry_price": 0.98,
+                     # 1s sampling + 0.02 deadband, skip after >5 effective
+                     # flips. 6-month GTD-fill test: +1152 U / DD -110 U at
+                     # 82% of the unfiltered trade count; >3 is tighter
+                     # (+1238 / -98) but filters more winners.
+                     "max_mid_crossings": 5, "mid_cross_band": 0.02,
+                     "mid_cross_sample_sec": 1},
     ("BNB", "15m"): {"entry_window_sec": 60, "threshold": 0.84,
                      "confirm_sec": 0, "max_entry_price": 0.96},
     ("BNB", "5m"): {"entry_window_sec": 10, "threshold": 0.84,
@@ -149,6 +155,14 @@ class Settings(BaseSettings):
     CONFIRM_SEC: float = 15.0          # wait, then require it is still >= threshold
     MAX_ENTRY_PRICE: float = 0.96      # skip if the confirmed price is >= this
     MIN_ENTRY_PRICE: float = 0.0       # 0 disables
+    # Mid-crossing filter: count effective UP-mid crossings of 0.5 from the
+    # window open to the confirmation tick. A deadband suppresses the 0.49/
+    # 0.51 noise; crossing more than MAX_MID_CROSSINGS times means the market
+    # has been flip-flopping, and the late "favorite" is more likely to
+    # reverse. 0 disables the filter.
+    MAX_MID_CROSSINGS: int = 0
+    MID_CROSS_BAND: float = 0.02
+    MID_CROSS_SAMPLE_SEC: int = 1
     STAKE_USD: float = 10.0          # backtest notional (10 USDC per trade)
     # Order sizing is by USDC and is configured separately for paper and
     # live execution: a strategy can be tested at 10 U and then promoted to
@@ -409,6 +423,9 @@ class Settings(BaseSettings):
             clone.STAKE_USD = 10.0
             clone.ENTRY_NOTIONAL_USD = 10.0
             clone.REARM_AFTER_FAILED_CONFIRM = False
+            clone.MAX_MID_CROSSINGS = int(defaults.get("max_mid_crossings", 0))
+            clone.MID_CROSS_BAND = float(defaults.get("mid_cross_band", 0.02))
+            clone.MID_CROSS_SAMPLE_SEC = int(defaults.get("mid_cross_sample_sec", 1))
 
         if asset == "BTC" and period == "15m":
             mode = self.TRADING_MODE
@@ -480,6 +497,12 @@ class Settings(BaseSettings):
             errors.append("MAX_ENTRY_PRICE 不能低于 ENTRY_THRESHOLD")
         if self.MIN_ENTRY_PRICE >= self.MAX_ENTRY_PRICE:
             errors.append("MIN_ENTRY_PRICE 必须低于 MAX_ENTRY_PRICE")
+        if self.MAX_MID_CROSSINGS < 0:
+            errors.append("MAX_MID_CROSSINGS 不能为负")
+        if not 0.0 <= self.MID_CROSS_BAND < 0.5:
+            errors.append("MID_CROSS_BAND 必须在 [0, 0.5) 内")
+        if self.MID_CROSS_SAMPLE_SEC < 1:
+            errors.append("MID_CROSS_SAMPLE_SEC 必须 >= 1")
         if self.ENTRY_WINDOW_SEC <= 0 or self.ENTRY_WINDOW_SEC > self.window_seconds:
             errors.append("ENTRY_WINDOW_SEC 必须在 (0, 窗口长度] 内")
         if self.CONFIRM_SEC < 0 or self.CONFIRM_SEC >= self.ENTRY_WINDOW_SEC:
@@ -538,6 +561,15 @@ TUNABLE_SPECS: dict[str, dict] = {
     "MIN_ENTRY_PRICE": {"group": "strategy", "type": "float", "min": 0.0, "max": 0.95, "step": 0.01,
                         "label": "入场价下限",
                         "help": "0 表示不启用。"},
+    "MAX_MID_CROSSINGS": {"group": "strategy", "type": "int", "min": 0, "max": 100, "step": 1,
+                          "label": "穿越次数上限",
+                          "help": "从窗口开盘到确认时刻，UP 中间价有效穿越 0.5 的次数超过该值则跳过。0=关闭。"},
+    "MID_CROSS_BAND": {"group": "strategy", "type": "float", "min": 0.0, "max": 0.2, "step": 0.005,
+                       "label": "穿越死区",
+                       "help": "UP 必须高于 0.5+死区或低于 0.5−死区才算一次有效穿越；0=无死区。"},
+    "MID_CROSS_SAMPLE_SEC": {"group": "strategy", "type": "int", "min": 1, "max": 30, "step": 1,
+                             "label": "穿越采样(秒)",
+                             "help": "每 N 秒取一个点统计穿越；默认 1 秒。"},
     "ENTRY_NOTIONAL_USD_PAPER": {"group": "sizing", "type": "float",
                                  "min": 1, "max": 100000, "step": 1,
                                  "label": "纸面单笔金额(USDC)",

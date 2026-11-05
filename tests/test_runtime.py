@@ -442,3 +442,47 @@ async def test_set_mode_switches_broker_and_risk(tmp_path):
     assert runtime.broker.mode == "live"
     assert runtime.risk.mode == "live"
     assert runtime.settings.TRADING_MODE == "live"
+
+
+async def test_mid_crossing_counter_uses_deadband(tmp_path):
+    settings = Settings(
+        DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
+        MAX_MID_CROSSINGS=3, MID_CROSS_BAND=0.02, MID_CROSS_SAMPLE_SEC=1,
+    )
+    runtime, db, aw, svc, pm = build(tmp_path, [], settings=settings)
+    for ts, up in ((SLOT + 1, 0.53), (SLOT + 1, 0.55), (SLOT + 2, 0.51),
+                   (SLOT + 3, 0.47), (SLOT + 4, 0.53)):
+        runtime._update_mid_crossings(
+            aw, Quote(ts=ts, up_mid=up, down_mid=1.0 - up), ts
+        )
+    # Same-second tick ignored; 0.51 is inside the band; two real flips seen.
+    assert aw.mid_cross_count == 2
+
+
+async def test_mid_crossing_filter_skips_entry(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    settings = Settings(
+        DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
+        ENTRY_WINDOW_SEC=60, ENTRY_THRESHOLD=0.90, CONFIRM_SEC=10,
+        MAX_ENTRY_PRICE=0.96, MAX_MID_CROSSINGS=3, MID_CROSS_BAND=0.02,
+        MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
+    )
+    runtime, db, aw, svc, pm = build(tmp_path, [], settings=settings)
+    aw.mid_cross_count = 4
+    decision = EntryDecision(
+        side=Side.DOWN, price=0.91, trigger_price=0.86,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    assert db.recent_trades() == []
+    assert db.recent_signals()[0]["skip_reason"] == "too_many_mid_crossings"
+    assert aw.strategy.state.phase.value == "SKIPPED"
+
+
+async def test_ws_lead_covers_full_window_with_filter(tmp_path):
+    settings = Settings(
+        DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), MAX_MID_CROSSINGS=3,
+    )
+    runtime, db, aw, svc, pm = build(tmp_path, [], settings=settings)
+    assert runtime._ws_lead(aw) == float(settings.window_seconds)

@@ -19,6 +19,12 @@ def test_validation_rejects_inconsistent_cap():
     assert any("MAX_ENTRY_PRICE" in message for message in errors)
 
 
+def test_validation_rejects_bad_mid_cross_band():
+    settings = Settings(MID_CROSS_BAND=0.5)
+    errors = settings.validation_errors()
+    assert any("MID_CROSS_BAND" in message for message in errors)
+
+
 def test_mode_defaults():
     settings = Settings()
     # Everything, BTC included, starts in paper until promoted explicitly.
@@ -45,6 +51,10 @@ def test_documented_defaults_and_enabled_set():
     doge5 = settings.for_strategy("DOGE", "5m")
     assert (doge5.ENTRY_WINDOW_SEC, doge5.ENTRY_THRESHOLD,
             doge5.CONFIRM_SEC, doge5.MAX_ENTRY_PRICE) == (25, 0.84, 2, 0.98)
+    # 1s sampling + 0.02 deadband, skip after >5 effective 0.5 flips.
+    assert (doge5.MAX_MID_CROSSINGS, doge5.MID_CROSS_BAND,
+            doge5.MID_CROSS_SAMPLE_SEC) == (5, 0.02, 1)
+    assert btc15.MAX_MID_CROSSINGS == 0
     all_settings = settings.strategy_settings()
     assert len(all_settings) == 14
     enabled = settings.enabled_strategy_settings()

@@ -34,8 +34,10 @@ from src.research.collector import LiveCollector
 from src.strategy.late_favorite import (
     EntryDecision,
     LateFavoriteStrategy,
+    Phase,
     StrategyParams,
     taker_fee,
+    update_mid_crossing,
     trade_pnl,
 )
 from src.strategy.risk import RiskManager
@@ -65,6 +67,10 @@ class ActiveWindow:
     entered: bool = False
     trade_id: int = 0
     last_sample_sec: int = -1
+    # Mid-crossing filter state (window-scoped; MAX_MID_CROSSINGS = 0 skips).
+    mid_cross_state: int = 0
+    mid_cross_count: int = 0
+    mid_cross_bucket: int = -1
     entry_window_logged: bool = False
     ws_watched: bool = False
     discovery_error: str = ""
@@ -269,6 +275,10 @@ class Runtime:
                 float(aw.strategy.params.entry_window_sec)
                 + float(aw.strategy.params.confirm_sec) + 5.0,
             )
+        if self.settings.MAX_MID_CROSSINGS > 0:
+            # The crossing count starts at the window open, so the 1s mid
+            # series (and the collector) must cover the whole window.
+            lead = max(lead, float(self.settings.window_seconds))
         return lead
 
     def _sleep_target(self, now: float) -> float:
@@ -460,6 +470,8 @@ class Runtime:
                 self.collector.add_sample(aw.slot, aw.quote_ts,
                                           quote.up_mid, quote.down_mid)
 
+        self._update_mid_crossings(aw, quote, aw.quote_ts)
+
         if aw.strategy is None or aw.strategy.state.done:
             return
 
@@ -481,6 +493,34 @@ class Runtime:
                      price=round(state.trigger_price, 4),
                      confirm_in_s=self.settings.CONFIRM_SEC)
 
+    def _update_mid_crossings(self, aw: ActiveWindow, quote: Quote,
+                              ts: float) -> None:
+        """Sample the UP mid at most once per bucket and count 0.5 flips.
+
+        The counter is window-scoped. ``MAX_MID_CROSSINGS = 0`` makes this a
+        no-op, so strategies without the filter keep the cheap tail-only
+        quote/WS window.
+        """
+        settings = self.settings
+        if settings.MAX_MID_CROSSINGS <= 0:
+            return
+        up = quote.up_mid
+        if up is None and quote.down_mid is not None:
+            up = 1.0 - float(quote.down_mid)
+        if up is None or up != up:  # None / NaN
+            return
+        step = max(1, int(settings.MID_CROSS_SAMPLE_SEC))
+        bucket = (int(ts) - int(aw.slot)) // step
+        if bucket < 0 or bucket <= aw.mid_cross_bucket:
+            return
+        aw.mid_cross_bucket = bucket
+        state, count = update_mid_crossing(
+            aw.mid_cross_state, aw.mid_cross_count, float(up),
+            float(settings.MID_CROSS_BAND),
+        )
+        aw.mid_cross_state = state
+        aw.mid_cross_count = count
+
     # ── execution ─────────────────────────────────────────────────────────
 
     async def _execute(self, aw: ActiveWindow, decision: EntryDecision,
@@ -492,6 +532,27 @@ class Runtime:
 
         if self.db.trade_exists(aw.slot, mode, self.settings.PERIOD, self.asset):
             aw.signal_recorded = True
+            return
+
+        # The confirmed favorite is only a favourite if the market has not
+        # been flip-flopping around 0.5 all window. This is a risk filter,
+        # not a signal: it skips entries that look like the live losses.
+        if settings.MAX_MID_CROSSINGS > 0 \
+                and aw.mid_cross_count > settings.MAX_MID_CROSSINGS:
+            self._record_signal(
+                aw, decision="skip", skip_reason="too_many_mid_crossings",
+                decision_obj=decision, confirm_price=decision.price,
+            )
+            if aw.strategy is not None:
+                aw.strategy.state.phase = Phase.SKIPPED
+                aw.strategy.state.skip_reason = "too_many_mid_crossings"
+            log.info(
+                "exec.aborted_mid_crossings", slot=aw.slot,
+                side=decision.side.value, crossings=aw.mid_cross_count,
+                max_crossings=settings.MAX_MID_CROSSINGS,
+                band=settings.MID_CROSS_BAND,
+                sample_sec=settings.MID_CROSS_SAMPLE_SEC,
+            )
             return
 
         # Re-read the book immediately before sending: the confirm tick can be
@@ -601,6 +662,7 @@ class Runtime:
             shares=shares, notional=notional, ask=ask,
             order_type="gtd" if use_gtd else "fak",
             spread=spread, depth=depth, mode=mode,
+            mid_crossings=aw.mid_cross_count,
         )
 
         entry_info: dict = {
@@ -748,6 +810,9 @@ class Runtime:
             "trigger_price": decision.trigger_price,
             "confirm_delay_sec": decision.confirm_delay_sec,
             "confirm_price_delta": decision.confirm_price_delta,
+            "mid_crossings": aw.mid_cross_count,
+            "mid_cross_band": settings.MID_CROSS_BAND,
+            "mid_cross_sample_sec": settings.MID_CROSS_SAMPLE_SEC,
             "limit_price": limit,
             "spread_at_entry": spread,
             "depth_at_limit": depth,
@@ -1150,6 +1215,9 @@ class Runtime:
                 "confirm_sec": self.settings.CONFIRM_SEC,
                 "max_entry_price": self.settings.MAX_ENTRY_PRICE,
                 "min_entry_price": self.settings.MIN_ENTRY_PRICE,
+                "max_mid_crossings": self.settings.MAX_MID_CROSSINGS,
+                "mid_cross_band": self.settings.MID_CROSS_BAND,
+                "mid_cross_sample_sec": self.settings.MID_CROSS_SAMPLE_SEC,
                 "stake_usd": self.settings.STAKE_USD,
                 "entry_notional_usd": float(self.settings.entry_notional_for(mode)),
                 "entry_notional_paper": float(self.settings.ENTRY_NOTIONAL_USD_PAPER),

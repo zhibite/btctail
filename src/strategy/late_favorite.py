@@ -68,6 +68,26 @@ class StrategyParams:
         return errors
 
 
+def update_mid_crossing(state: int, count: int, up: float,
+                        band: float) -> tuple[int, int]:
+    """Advance the ``UP mid crosses 0.5`` counter with a deadband.
+
+    ``state`` is +1 above ``0.5 + band``, -1 below ``0.5 - band`` and keeps
+    its previous value inside the band, so a 0.49 <-> 0.51 wiggle does not
+    count. A transition between the two states counts once; the first
+    excursion away from the neutral state does not.
+    """
+    if up > 0.5 + band:
+        nxt = 1
+    elif up < 0.5 - band:
+        nxt = -1
+    else:
+        return state, count
+    if state and nxt != state:
+        count += 1
+    return nxt, count
+
+
 class Phase(str, Enum):
     WAITING = "WAITING"        # before the entry window opens
     SCANNING = "SCANNING"      # inside the window, waiting for a trigger

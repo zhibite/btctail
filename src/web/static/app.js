@@ -585,6 +585,9 @@
     { field: "ENTRY_THRESHOLD", param: "threshold", label: "阈值" },
     { field: "CONFIRM_SEC", param: "confirm_sec", label: "确认(s)" },
     { field: "MAX_ENTRY_PRICE", param: "max_entry_price", label: "上限" },
+    { field: "MAX_MID_CROSSINGS", param: "max_mid_crossings", label: "穿越上限" },
+    { field: "MID_CROSS_BAND", param: "mid_cross_band", label: "死区" },
+    { field: "MID_CROSS_SAMPLE_SEC", param: "mid_cross_sample_sec", label: "采样(s)" },
   ];
 
   const configPage = {
