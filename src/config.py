@@ -46,9 +46,15 @@ RECOMMENDED_PARAMS: dict[tuple[str, str], dict[str, float]] = {
     ("ETH", "5m"): {"entry_window_sec": 15, "threshold": 0.90,
                     "confirm_sec": 0, "max_entry_price": 0.93},
     ("SOL", "15m"): {"entry_window_sec": 45, "threshold": 0.84,
-                     "confirm_sec": 0, "max_entry_price": 0.93},
+                     "confirm_sec": 0, "max_entry_price": 0.93,
+                     # 15m uses 5s sampling (180 points per window).
+                     "max_mid_crossings": 5, "mid_cross_band": 0.02,
+                     "mid_cross_sample_sec": 5},
     ("SOL", "5m"): {"entry_window_sec": 20, "threshold": 0.84,
-                    "confirm_sec": 0, "max_entry_price": 0.95},
+                    "confirm_sec": 0, "max_entry_price": 0.95,
+                    # 5m uses 1s sampling.
+                    "max_mid_crossings": 5, "mid_cross_band": 0.02,
+                    "mid_cross_sample_sec": 1},
     ("XRP", "15m"): {"entry_window_sec": 60, "threshold": 0.90,
                      "confirm_sec": 10, "max_entry_price": 0.94},
     ("XRP", "5m"): {"entry_window_sec": 20, "threshold": 0.90,
@@ -426,6 +432,11 @@ class Settings(BaseSettings):
             clone.MAX_MID_CROSSINGS = int(defaults.get("max_mid_crossings", 0))
             clone.MID_CROSS_BAND = float(defaults.get("mid_cross_band", 0.02))
             clone.MID_CROSS_SAMPLE_SEC = int(defaults.get("mid_cross_sample_sec", 1))
+
+        # A 15m window is 900s: sample every 5s (180 points) rather than the
+        # 1s used by 5m. Runtime/DB overrides still win.
+        if period == "15m":
+            clone.MID_CROSS_SAMPLE_SEC = 5
 
         if asset == "BTC" and period == "15m":
             mode = self.TRADING_MODE

@@ -55,6 +55,15 @@ def test_documented_defaults_and_enabled_set():
     assert (doge5.MAX_MID_CROSSINGS, doge5.MID_CROSS_BAND,
             doge5.MID_CROSS_SAMPLE_SEC) == (5, 0.02, 1)
     assert btc15.MAX_MID_CROSSINGS == 0
+    # Every 15m strategy samples the 900s window every 5s (180 points).
+    assert btc15.MID_CROSS_SAMPLE_SEC == 5
+    assert eth15.MID_CROSS_SAMPLE_SEC == 5
+    sol15 = settings.for_strategy("SOL", "15m")
+    assert (sol15.MAX_MID_CROSSINGS, sol15.MID_CROSS_BAND,
+            sol15.MID_CROSS_SAMPLE_SEC) == (5, 0.02, 5)
+    sol5 = settings.for_strategy("SOL", "5m")
+    assert (sol5.MAX_MID_CROSSINGS, sol5.MID_CROSS_BAND,
+            sol5.MID_CROSS_SAMPLE_SEC) == (5, 0.02, 1)
     all_settings = settings.strategy_settings()
     assert len(all_settings) == 14
     enabled = settings.enabled_strategy_settings()

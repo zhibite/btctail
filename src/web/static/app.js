@@ -632,7 +632,14 @@
         const [status, meta] = await Promise.all([
           api("/api/status"), api("/api/strategies"),
         ]);
-        this.status = status.strategies || [];
+        // Show the 5m strategies first, then the 7 15m rows. Sorting by
+        // period only is stable, so the asset order inside each group is
+        // preserved.
+        const periodRank = { "5m": 0, "15m": 1 };
+        this.status = (status.strategies || []).sort(
+          (a, b) => (periodRank[(a.app || {}).period] ?? 9)
+            - (periodRank[(b.app || {}).period] ?? 9),
+        );
         this.meta = meta;
         this.renderTable();
         this.renderSelects();
