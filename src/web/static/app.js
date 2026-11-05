@@ -669,7 +669,8 @@
             "<option value='paper'" + (mode === "paper" ? " selected" : "") + ">纸面</option>" +
             "<option value='live'" + (mode === "live" ? " selected" : "") + ">实盘</option>" +
           "</select></td>" +
-          MAIN_FIELDS.map((f) => "<td>" + this.inputHtml(f.field, p[f.param]) + "</td>").join("") +
+          MAIN_FIELDS.map((f) => "<td class='num'>" +
+            this.inputHtml(f.field, p[f.param]) + "</td>").join("") +
           "<td><button class='btn small ghost' data-rec='" + fmt.esc(key) + "'>推荐</button> " +
           "<button class='btn small' data-save='" + fmt.esc(key) + "'>保存</button></td>" +
           "</tr>";

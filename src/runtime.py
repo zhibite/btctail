@@ -65,6 +65,7 @@ class ActiveWindow:
     trade_id: int = 0
     last_sample_sec: int = -1
     entry_window_logged: bool = False
+    ws_watched: bool = False
     discovery_error: str = ""
     discovery_task: Optional[asyncio.Task] = None
     discovery_failures: int = 0
@@ -332,6 +333,9 @@ class Runtime:
 
     def _finalize_window(self, aw: ActiveWindow) -> None:
         """Flush remaining samples and record a no-trade signal if needed."""
+        if self.ws is not None and aw.ws_watched:
+            self.ws.unwatch(self.key)
+            aw.ws_watched = False
         state = aw.strategy.state if aw.strategy else None
         samples = self.collector.sample_count(aw.slot) if self.collector else 0
         if not aw.signal_recorded:
@@ -386,8 +390,9 @@ class Runtime:
         aw.next_discovery_ts = 0.0
         aw.discovery_failures = 0
         self.db.upsert_window(market)
-        if self.ws is not None:
-            self.ws.watch([market.token_up, market.token_down], owner=self.key)
+        # Do not subscribe yet: the shared market stream is expensive and
+        # only the collection/entry window needs it. _maybe_refresh_quote
+        # subscribes when the window enters that phase.
         log.info(
             "window.market_ready",
             strategy=self.key, slot=aw.slot, slug=market.slug,
@@ -413,6 +418,21 @@ class Runtime:
             interval = self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
         else:
             interval = self.settings.POLL_INTERVAL_MS / 1000.0
+        # Subscribe to the shared stream only near the end of the window.
+        # Keep a safety floor for strategies whose entry+confirm window is
+        # longer than WS_SUBSCRIBE_SEC (HYPE 15m is 105s + 10s).
+        if aw.strategy is not None:
+            ws_lead = max(
+                float(self.settings.WS_SUBSCRIBE_SEC or 0.0),
+                float(aw.strategy.params.entry_window_sec)
+                + float(aw.strategy.params.confirm_sec) + 5.0,
+            )
+        else:
+            ws_lead = float(self.settings.WS_SUBSCRIBE_SEC or 0.0)
+        if (now >= aw.end_ts - ws_lead and self.ws is not None
+                and not aw.ws_watched):
+            self.ws.watch([aw.market.token_up, aw.market.token_down], owner=self.key)
+            aw.ws_watched = True
         if now - aw.quote_ts < interval:
             return
 

@@ -55,6 +55,18 @@ class FakeMarketService:
         return quote
 
 
+class FakeWS:
+    def __init__(self):
+        self.watched = []
+        self.unwatched = []
+
+    def watch(self, token_ids, owner="default"):
+        self.watched.append((list(token_ids), owner))
+
+    def unwatch(self, owner):
+        self.unwatched.append(owner)
+
+
 class FakeBroker(Broker):
     mode = "paper"
 
@@ -329,6 +341,52 @@ async def test_set_mode_refused_with_open_position(tmp_path):
     ok, message = runtime.set_mode("live")
     assert ok is False
     assert "未结算" in message
+
+
+async def test_ws_subscribes_only_near_the_window_end(tmp_path):
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 500, 0.50), quote(END - 200, 0.50),
+                   quote(END - 80, 0.50)],
+    )
+    ws = FakeWS()
+    runtime.ws = ws
+
+    set_clock(runtime, END - 500)
+    await runtime._maybe_refresh_quote(aw, END - 500)
+    assert ws.watched == []
+
+    # Inside the collection window but still more than 120s before the end.
+    set_clock(runtime, END - 200)
+    await runtime._maybe_refresh_quote(aw, END - 200)
+    assert ws.watched == []
+
+    set_clock(runtime, END - 80)
+    await runtime._maybe_refresh_quote(aw, END - 80)
+    assert ws.watched == [(["up-token", "down-token"], "BTC:15m")]
+
+    runtime._finalize_window(aw)
+    assert ws.unwatched == ["BTC:15m"]
+
+
+async def test_ws_subscribes_early_enough_for_long_entry_windows(tmp_path):
+    settings = Settings(
+        DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), TRADING_MODE="paper",
+        MAX_SPREAD_AT_ENTRY=0.10, MIN_WALLET_BALANCE_USD=0,
+        ENTRY_WINDOW_SEC=105, ENTRY_THRESHOLD=0.88, CONFIRM_SEC=10,
+        MAX_ENTRY_PRICE=0.97,
+    )
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 130, 0.50), quote(END - 110, 0.50)],
+        settings=settings,
+    )
+    ws = FakeWS()
+    runtime.ws = ws
+    set_clock(runtime, END - 130)
+    await runtime._maybe_refresh_quote(aw, END - 130)
+    assert ws.watched == []
+    set_clock(runtime, END - 110)
+    await runtime._maybe_refresh_quote(aw, END - 110)
+    assert ws.watched == [(["up-token", "down-token"], "BTC:15m")]
 
 
 async def test_live_mode_uses_the_live_notional(tmp_path):

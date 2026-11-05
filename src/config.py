@@ -216,6 +216,10 @@ class Settings(BaseSettings):
     # trades; fall back to REST only when the cached value is older than
     # this. Entry execution uses a shorter age (see runtime.py).
     WS_QUOTE_MAX_AGE_S: float = 5.0
+    # Subscribe the shared market stream only for the final N seconds of a
+    # window. Strategies with a longer entry+confirm window automatically
+    # start earlier (HYPE 15m: 105s + 10s + 5s buffer).
+    WS_SUBSCRIBE_SEC: float = 120.0
     POLL_INTERVAL_MS: int = 1000       # outside the entry window
     ENTRY_POLL_INTERVAL_MS: int = 250  # inside the entry window
     # Dashboard-only polling before the collection/entry window, so the
