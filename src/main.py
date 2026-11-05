@@ -232,8 +232,10 @@ async def run() -> int:
             broker = build_broker(strategy, db, clob)
             cache = shared_cache.get(strategy.PERIOD) or PriceCache()
             ws = shared_ws.get(strategy.PERIOD)
-            service = MarketService(pm, cache,
-                                    autodetect_fee=strategy.FEE_RATE_AUTODETECT)
+            service = MarketService(
+                pm, cache, autodetect_fee=strategy.FEE_RATE_AUTODETECT,
+                ws_max_age=strategy.WS_QUOTE_MAX_AGE_S,
+            )
             runtime = Runtime(strategy, db, pm, service, broker, ws,
                               broker_factory=_factory(strategy),
                               ws_shared=ws is not None, pm_shared=True)

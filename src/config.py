@@ -212,6 +212,10 @@ class Settings(BaseSettings):
     # has verified the value for a market.
     FEE_RATE_AUTODETECT: bool = False
     USE_MARKET_WS: bool = True
+    # Prefer the shared market WebSocket for signal midpoints and last
+    # trades; fall back to REST only when the cached value is older than
+    # this. Entry execution uses a shorter age (see runtime.py).
+    WS_QUOTE_MAX_AGE_S: float = 5.0
     POLL_INTERVAL_MS: int = 1000       # outside the entry window
     ENTRY_POLL_INTERVAL_MS: int = 250  # inside the entry window
     # Dashboard-only polling before the collection/entry window, so the

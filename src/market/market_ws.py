@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -34,7 +35,13 @@ class PriceCache:
     best_bid: dict[str, float] = field(default_factory=dict)
     best_ask: dict[str, float] = field(default_factory=dict)
     book: dict[str, OrderBook] = field(default_factory=dict)
+    # Per-token freshness. `updated_at` is any event; the others separate
+    # top-of-book from last-trade so a trade print cannot make a stale quote
+    # look fresh (or vice versa).
     updated_at: dict[str, float] = field(default_factory=dict)
+    top_at: dict[str, float] = field(default_factory=dict)
+    last_at: dict[str, float] = field(default_factory=dict)
+    book_at: dict[str, float] = field(default_factory=dict)
 
     def mid(self, token_id: str) -> Optional[float]:
         bid = self.best_bid.get(token_id)
@@ -43,10 +50,15 @@ class PriceCache:
             return (bid + ask) / 2.0
         return None
 
+    def fresh(self, timestamps: dict[str, float], token_id: str,
+              max_age: float) -> bool:
+        seen = timestamps.get(token_id)
+        return seen is not None and (time.time() - seen) <= max_age
+
     def clear(self, token_ids: list[str]) -> None:
         for token_id in token_ids:
             for table in (self.last_trade, self.best_bid, self.best_ask, self.book,
-                          self.updated_at):
+                          self.updated_at, self.top_at, self.last_at, self.book_at):
                 table.pop(token_id, None)
 
     def snapshot(self) -> dict[str, Any]:
@@ -195,8 +207,6 @@ class MarketWS:
                 log.debug("market_ws.subscribe_failed", error=str(exc))
 
     def _handle(self, raw: str | bytes) -> None:
-        import time
-
         self._last_message_ts = time.time()
         try:
             payload = json.loads(raw)
@@ -265,14 +275,17 @@ class MarketWS:
         book.bids.sort(key=lambda level: level.price, reverse=True)
         book.asks.sort(key=lambda level: level.price)
         if book.bids or book.asks:
+            now = time.time()
             self.cache.book[token_id] = book
+            self.cache.book_at[token_id] = now
             if book.best_bid is not None:
                 self.cache.best_bid[token_id] = book.best_bid
             if book.best_ask is not None:
                 self.cache.best_ask[token_id] = book.best_ask
+            self.cache.top_at[token_id] = now
+            self.cache.updated_at[token_id] = now
 
-    @staticmethod
-    def _set(table: dict[str, float], token_id: str, value: Any) -> None:
+    def _set(self, table: dict[str, float], token_id: str, value: Any) -> None:
         if not token_id or value in (None, ""):
             return
         try:
@@ -280,4 +293,10 @@ class MarketWS:
         except (TypeError, ValueError):
             return
         if 0.0 <= number <= 1.0:
+            now = time.time()
             table[token_id] = number
+            self.cache.updated_at[token_id] = now
+            if table is self.cache.last_trade:
+                self.cache.last_at[token_id] = now
+            elif table is self.cache.best_bid or table is self.cache.best_ask:
+                self.cache.top_at[token_id] = now

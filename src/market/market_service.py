@@ -86,12 +86,16 @@ class _SlotEntry:
 
 class MarketService:
     def __init__(self, pm: PolymarketClient, price_cache: PriceCache | None = None,
-                 autodetect_fee: bool = False) -> None:
+                 autodetect_fee: bool = False,
+                 ws_max_age: float = 5.0) -> None:
         self._pm = pm
         self._ws_cache = price_cache
         self._slots: dict[int, _SlotEntry] = {}
         self._failed_at: dict[int, float] = {}
         self._autodetect_fee = autodetect_fee
+        # Only trust a shared-WS quote for this long before falling back to
+        # REST. A disconnected/stale socket must not freeze the signal price.
+        self._ws_max_age = float(ws_max_age)
 
     # ── discovery ─────────────────────────────────────────────────────────
 
@@ -162,30 +166,77 @@ class MarketService:
 
     # ── quotes ────────────────────────────────────────────────────────────
 
-    async def fetch_quote(self, market: MarketInfo, *, with_books: bool = False) -> Quote:
+    async def fetch_quote(self, market: MarketInfo, *, with_books: bool = False,
+                          ws_max_age: float | None = None) -> Quote:
         quote = Quote(ts=time.time())
+        max_age = self._ws_max_age if ws_max_age is None else float(ws_max_age)
+        # A "last trade" can legitimately be minutes old in a quiet market;
+        # the timestamp marks when we learned it. Give it a longer lifetime
+        # than top-of-book so we do not poll REST once per second for it.
+        last_max_age = max(max_age, 60.0)
+        cache = self._ws_cache
+
+        # 1) Shared WebSocket cache first: it is the freshest source and
+        # costs no REST call. Only fresh entries are trusted.
+        if cache is not None:
+            for side, token in ((Side.UP, market.token_up),
+                                (Side.DOWN, market.token_down)):
+                if cache.fresh(cache.top_at, token, max_age):
+                    if side is Side.UP:
+                        quote.up_bid = cache.best_bid.get(token)
+                        quote.up_ask = cache.best_ask.get(token)
+                        quote.up_mid = cache.mid(token)
+                    else:
+                        quote.down_bid = cache.best_bid.get(token)
+                        quote.down_ask = cache.best_ask.get(token)
+                        quote.down_mid = cache.mid(token)
+                if cache.fresh(cache.last_at, token, last_max_age):
+                    if side is Side.UP:
+                        quote.up_last = cache.last_trade.get(token)
+                    else:
+                        quote.down_last = cache.last_trade.get(token)
+            quote.up_book = cache.book.get(market.token_up)
+            quote.down_book = cache.book.get(market.token_down)
+
+        # 2) REST only for what the cache could not provide.
+        missing_mid = [
+            token for token, value in (
+                (market.token_up, quote.up_mid),
+                (market.token_down, quote.down_mid),
+            ) if value is None
+        ]
+        missing_last = [
+            token for token, value in (
+                (market.token_up, quote.up_last),
+                (market.token_down, quote.down_last),
+            ) if value is None
+        ]
+        mids: dict[str, float] = {}
+        lasts: dict[str, float] = {}
         try:
-            mids, lasts = await asyncio.gather(
-                self._pm.get_midpoints([market.token_up, market.token_down]),
-                self._pm.get_last_trade_prices([market.token_up, market.token_down]),
-            )
-            quote.up_mid = mids.get(market.token_up)
-            quote.down_mid = mids.get(market.token_down)
-            quote.up_last = lasts.get(market.token_up)
-            quote.down_last = lasts.get(market.token_down)
+            if missing_mid and missing_last:
+                mids, lasts = await asyncio.gather(
+                    self._pm.get_midpoints(missing_mid),
+                    self._pm.get_last_trade_prices(missing_last),
+                )
+            elif missing_mid:
+                mids = await self._pm.get_midpoints(missing_mid)
+            elif missing_last:
+                lasts = await self._pm.get_last_trade_prices(missing_last)
         except Exception as exc:  # noqa: BLE001
             log.debug("market.quote_fetch_failed", error=str(exc))
 
-        # WebSocket top-of-book is fresher than the REST book and costs
-        # nothing; use it when available.
-        if self._ws_cache is not None:
-            quote.up_bid = self._ws_cache.best_bid.get(market.token_up)
-            quote.up_ask = self._ws_cache.best_ask.get(market.token_up)
-            quote.down_bid = self._ws_cache.best_bid.get(market.token_down)
-            quote.down_ask = self._ws_cache.best_ask.get(market.token_down)
-            quote.up_book = self._ws_cache.book.get(market.token_up)
-            quote.down_book = self._ws_cache.book.get(market.token_down)
+        if quote.up_mid is None:
+            quote.up_mid = mids.get(market.token_up)
+        if quote.down_mid is None:
+            quote.down_mid = mids.get(market.token_down)
+        if quote.up_last is None:
+            quote.up_last = lasts.get(market.token_up)
+        if quote.down_last is None:
+            quote.down_last = lasts.get(market.token_down)
 
+        # 3) Order books: the shared cache covers normal polling; REST is
+        # still used at entry time because the executor needs fresh depth.
         if with_books or quote.up_bid is None or quote.up_ask is None \
                 or quote.down_bid is None or quote.down_ask is None:
             books = await self._pm.get_order_books([market.token_up, market.token_down])
@@ -200,7 +251,7 @@ class MarketService:
                 quote.down_bid = down_book.best_bid
                 quote.down_ask = down_book.best_ask
 
-        # A one-sided REST failure should not blank the whole quote.
+        # A one-sided failure should not blank the whole quote.
         if quote.up_mid is None and quote.up_last is not None:
             quote.up_mid = quote.up_last
         if quote.down_mid is None and quote.down_last is not None:

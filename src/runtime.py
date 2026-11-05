@@ -46,6 +46,9 @@ log = get_logger(__name__)
 # before treating the signal as reversed -- a collapse between confirm and
 # send means the market has re-priced the outcome, not that we got a bargain.
 EXEC_REVERSAL_TOLERANCE = 0.02
+# At execution time a top-of-book quote older than this is not trusted; the
+# order is too sensitive to a stale last-second price.
+EXEC_QUOTE_WS_MAX_AGE = 1.0
 
 
 @dataclass
@@ -474,7 +477,11 @@ class Runtime:
         # up to one poll interval old and the last seconds are volatile.
         try:
             fresh = await asyncio.wait_for(
-                self.market_svc.fetch_quote(market, with_books=True), timeout=6.0
+                self.market_svc.fetch_quote(
+                    market, with_books=True,
+                    ws_max_age=EXEC_QUOTE_WS_MAX_AGE,
+                ),
+                timeout=6.0,
             )
         except asyncio.TimeoutError:
             log.warning("exec.quote_refresh_timeout", slot=aw.slot,

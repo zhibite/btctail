@@ -48,7 +48,7 @@ class FakeMarketService:
     async def get_market(self, slot):
         return self.market if slot == self.market.slot else None
 
-    async def fetch_quote(self, market, with_books=False):
+    async def fetch_quote(self, market, with_books=False, ws_max_age=None):
         self.fetches += 1
         quote = self.quotes[min(self.index, len(self.quotes) - 1)]
         self.index += 1
