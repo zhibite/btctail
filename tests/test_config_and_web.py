@@ -54,7 +54,7 @@ def test_documented_defaults_and_enabled_set():
     # 1s sampling + 0.02 deadband, skip after >5 effective 0.5 flips.
     assert (doge5.MAX_MID_CROSSINGS, doge5.MID_CROSS_BAND,
             doge5.MID_CROSS_SAMPLE_SEC) == (5, 0.02, 1)
-    assert btc15.MAX_MID_CROSSINGS == 0
+    assert btc15.MAX_MID_CROSSINGS == 5
     # Every 15m strategy samples the 900s window every 5s (180 points).
     assert btc15.MID_CROSS_SAMPLE_SEC == 5
     assert eth15.MID_CROSS_SAMPLE_SEC == 5
@@ -74,6 +74,12 @@ def test_documented_defaults_and_enabled_set():
         assert strategy.ENTRY_NOTIONAL_USD_LIVE == 5.0
         assert strategy.entry_notional_for("paper") == 10.0
         assert strategy.entry_notional_for("live") == 5.0
+        # The crossing filter is on for every strategy by default; 15m
+        # samples 180 points (5s), 5m samples 1s.
+        assert (strategy.MAX_MID_CROSSINGS, strategy.MID_CROSS_BAND) == (5, 0.02)
+        assert strategy.MID_CROSS_SAMPLE_SEC == (
+            5 if strategy.PERIOD == "15m" else 1
+        )
 
 
 def test_mode_is_scoped_per_asset_and_period(tmp_path):

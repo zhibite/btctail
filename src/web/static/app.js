@@ -708,11 +708,16 @@
       const meta = (this.meta && this.meta.strategies || []).find((s) => s.key === key);
       if (!tr || !meta || !meta.recommended) return;
       const rec = meta.recommended;
+      const fallback = {
+        MAX_MID_CROSSINGS: 5,
+        MID_CROSS_BAND: 0.02,
+        MID_CROSS_SAMPLE_SEC: meta.period === "15m" ? 5 : 1,
+      };
       MAIN_FIELDS.forEach((f) => {
         const input = tr.querySelector("[data-field='" + f.field + "']");
-        if (input && rec[f.param] !== undefined && rec[f.param] !== null) {
-          input.value = rec[f.param];
-        }
+        const value = rec[f.param] !== undefined && rec[f.param] !== null
+          ? rec[f.param] : fallback[f.field];
+        if (input && value !== undefined) input.value = value;
       });
       toast(key + " 已填入 docs 推荐值，点「保存」生效", "ok");
     },

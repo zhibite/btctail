@@ -276,10 +276,23 @@ class Runtime:
                 + float(aw.strategy.params.confirm_sec) + 5.0,
             )
         if self.settings.MAX_MID_CROSSINGS > 0:
-            # The crossing count starts at the window open, so the 1s mid
-            # series (and the collector) must cover the whole window.
+            # The crossing count starts at the window open, so the mid series
+            # (and the collector) must cover the whole window.
             lead = max(lead, float(self.settings.window_seconds))
         return lead
+
+    def _pre_entry_poll_interval(self) -> float:
+        """Quote cadence before the entry window.
+
+        Filter-enabled strategies need samples from the window open, but the
+        crossing counter only needs one point per ``MID_CROSS_SAMPLE_SEC``:
+        1s for 5m, 5s for 15m. Polling at that cadence instead of the generic
+        1s keeps the full-window subscription cheap.
+        """
+        interval = self.settings.POLL_INTERVAL_MS / 1000.0
+        if self.settings.MAX_MID_CROSSINGS > 0:
+            interval = max(interval, float(self.settings.MID_CROSS_SAMPLE_SEC))
+        return interval
 
     def _sleep_target(self, now: float) -> float:
         if not self.enabled:
@@ -294,7 +307,7 @@ class Runtime:
             return self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
         if now >= aw.entry_start_ts:
             return self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
-        return self.settings.POLL_INTERVAL_MS / 1000.0
+        return self._pre_entry_poll_interval()
 
     async def _tick(self, now: float) -> None:
         self._cycle_count += 1
@@ -440,7 +453,7 @@ class Runtime:
         elif now >= aw.entry_start_ts:
             interval = self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
         else:
-            interval = self.settings.POLL_INTERVAL_MS / 1000.0
+            interval = self._pre_entry_poll_interval()
         if not display_only and self.ws is not None and not aw.ws_watched:
             self.ws.watch([aw.market.token_up, aw.market.token_down], owner=self.key)
             aw.ws_watched = True

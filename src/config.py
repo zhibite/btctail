@@ -429,14 +429,14 @@ class Settings(BaseSettings):
             clone.STAKE_USD = 10.0
             clone.ENTRY_NOTIONAL_USD = 10.0
             clone.REARM_AFTER_FAILED_CONFIRM = False
-            clone.MAX_MID_CROSSINGS = int(defaults.get("max_mid_crossings", 0))
-            clone.MID_CROSS_BAND = float(defaults.get("mid_cross_band", 0.02))
-            clone.MID_CROSS_SAMPLE_SEC = int(defaults.get("mid_cross_sample_sec", 1))
 
-        # A 15m window is 900s: sample every 5s (180 points) rather than the
-        # 1s used by 5m. Runtime/DB overrides still win.
-        if period == "15m":
-            clone.MID_CROSS_SAMPLE_SEC = 5
+        # The crossing filter runs on every strategy by default; the config
+        # page can still turn it off per strategy with MAX_MID_CROSSINGS=0.
+        # A 15m window is 900s and samples every 5s (180 points); 5m samples
+        # every 1s.
+        clone.MAX_MID_CROSSINGS = 5
+        clone.MID_CROSS_BAND = 0.02
+        clone.MID_CROSS_SAMPLE_SEC = 5 if period == "15m" else 1
 
         if asset == "BTC" and period == "15m":
             mode = self.TRADING_MODE
