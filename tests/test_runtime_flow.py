@@ -45,7 +45,7 @@ class FakeMarketService:
         # MarketService.get_market is synchronous; keep the fake faithful.
         return self.markets.get(slot)
 
-    async def fetch_quote(self, market, with_books=False, ws_max_age=None):
+    async def fetch_quote(self, market, with_books=False, ws_max_age=None, mids_only=False):
         now = self.clock()
         up = 0.92 if now >= END - 50 else 0.50
         return Quote(ts=now, up_mid=up, down_mid=round(1 - up, 4),

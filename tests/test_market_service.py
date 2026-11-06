@@ -150,3 +150,15 @@ async def test_entry_uses_shorter_ws_freshness():
     quote = await service.fetch_quote(make_market(), ws_max_age=2.0)
     assert quote.up_mid == pytest.approx(0.61)
     assert pm.mid_calls == [[UP, DOWN]]
+
+
+@pytest.mark.asyncio
+async def test_mids_only_skips_last_trades_and_books():
+    pm = FakePM()
+    service = MarketService(pm)
+    quote = await service.fetch_quote(make_market(), mids_only=True)
+    assert quote.up_mid == pytest.approx(0.61)
+    assert quote.down_mid == pytest.approx(0.39)
+    assert len(pm.mid_calls) == 1
+    assert pm.last_calls == []
+    assert pm.book_calls == []

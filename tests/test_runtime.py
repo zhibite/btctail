@@ -48,7 +48,7 @@ class FakeMarketService:
     async def get_market(self, slot):
         return self.market if slot == self.market.slot else None
 
-    async def fetch_quote(self, market, with_books=False, ws_max_age=None):
+    async def fetch_quote(self, market, with_books=False, ws_max_age=None, mids_only=False):
         self.fetches += 1
         quote = self.quotes[min(self.index, len(self.quotes) - 1)]
         self.index += 1
@@ -480,9 +480,22 @@ async def test_mid_crossing_filter_skips_entry(tmp_path):
     assert aw.strategy.state.phase.value == "SKIPPED"
 
 
-async def test_ws_lead_covers_full_window_with_filter(tmp_path):
+async def test_ws_lead_stays_tail_with_filter(tmp_path):
+    # The crossing counter's early samples come from REST; the WS keeps the
+    # short tail window so the provider does not treat us as a slow consumer.
     settings = Settings(
         DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path), MAX_MID_CROSSINGS=3,
     )
     runtime, db, aw, svc, pm = build(tmp_path, [], settings=settings)
-    assert runtime._ws_lead(aw) == float(settings.window_seconds)
+    assert runtime._ws_lead(aw) == 120.0
+
+
+async def test_pre_entry_poll_interval_uses_sample_sec(tmp_path):
+    settings = Settings(
+        DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path),
+        MAX_MID_CROSSINGS=5, MID_CROSS_SAMPLE_SEC=5,
+    )
+    runtime, db, aw, svc, pm = build(tmp_path, [], settings=settings)
+    assert runtime._pre_entry_poll_interval() == 5.0
+    settings.MID_CROSS_SAMPLE_SEC = 1
+    assert runtime._pre_entry_poll_interval() == 1.0

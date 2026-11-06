@@ -275,10 +275,6 @@ class Runtime:
                 float(aw.strategy.params.entry_window_sec)
                 + float(aw.strategy.params.confirm_sec) + 5.0,
             )
-        if self.settings.MAX_MID_CROSSINGS > 0:
-            # The crossing count starts at the window open, so the mid series
-            # (and the collector) must cover the whole window.
-            lead = max(lead, float(self.settings.window_seconds))
         return lead
 
     def _pre_entry_poll_interval(self) -> float:
@@ -286,8 +282,8 @@ class Runtime:
 
         Filter-enabled strategies need samples from the window open, but the
         crossing counter only needs one point per ``MID_CROSS_SAMPLE_SEC``:
-        1s for 5m, 5s for 15m. Polling at that cadence instead of the generic
-        1s keeps the full-window subscription cheap.
+        1s for 5m, 5s for 15m. Those early samples come from REST; the WS is
+        still subscribed only for the final entry window.
         """
         interval = self.settings.POLL_INTERVAL_MS / 1000.0
         if self.settings.MAX_MID_CROSSINGS > 0:
@@ -302,8 +298,11 @@ class Runtime:
             return 1.0
         if now >= aw.end_ts:
             return 0.5
-        # Before the short WS window only the dashboard needs prices.
+        # Before the short WS window only the dashboard needs prices; a
+        # filter strategy also needs one early sample per crossing bucket.
         if now < aw.end_ts - self._ws_lead(aw):
+            if self.settings.MAX_MID_CROSSINGS > 0:
+                return self._pre_entry_poll_interval()
             return self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
         if now >= aw.entry_start_ts:
             return self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
@@ -449,7 +448,15 @@ class Runtime:
         ws_from = aw.end_ts - self._ws_lead(aw)
         display_only = now < ws_from
         if display_only:
-            interval = self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
+            # Filter strategies need one early-window sample per crossing
+            # bucket; taking it via REST is far cheaper than keeping the WS
+            # subscribed to every token for the whole window (the server
+            # closes slow consumers with 1013 and forces a resubscribe).
+            interval = (
+                self._pre_entry_poll_interval()
+                if self.settings.MAX_MID_CROSSINGS > 0
+                else self.settings.DISPLAY_POLL_INTERVAL_MS / 1000.0
+            )
         elif now >= aw.entry_start_ts:
             interval = self.settings.ENTRY_POLL_INTERVAL_MS / 1000.0
         else:
@@ -462,7 +469,11 @@ class Runtime:
 
         try:
             quote = await asyncio.wait_for(
-                self.market_svc.fetch_quote(aw.market), timeout=6.0
+                self.market_svc.fetch_quote(
+                    aw.market,
+                    mids_only=display_only and self.settings.MAX_MID_CROSSINGS > 0,
+                ),
+                timeout=6.0,
             )
         except asyncio.TimeoutError:
             log.warning("market.quote_timeout", slot=aw.slot)
@@ -472,18 +483,14 @@ class Runtime:
         aw.quote_ts = self._now()
 
         if display_only:
-            # Prices for the dashboard only: not sampled, not fed to the
-            # strategy (which ignores pre-window ticks anyway).
+            # Prices for the dashboard only: not fed to the strategy (which
+            # ignores pre-window ticks anyway). Filter strategies still take
+            # one sample per bucket for the crossing count and the collector.
+            if self.settings.MAX_MID_CROSSINGS > 0:
+                self._sample_quote(aw, quote)
             return
 
-        if self.collector is not None:
-            second = int(aw.quote_ts)
-            if second != aw.last_sample_sec:
-                aw.last_sample_sec = second
-                self.collector.add_sample(aw.slot, aw.quote_ts,
-                                          quote.up_mid, quote.down_mid)
-
-        self._update_mid_crossings(aw, quote, aw.quote_ts)
+        self._sample_quote(aw, quote)
 
         if aw.strategy is None or aw.strategy.state.done:
             return
@@ -505,6 +512,16 @@ class Runtime:
                      side=state.trigger_side.value if state.trigger_side else None,
                      price=round(state.trigger_price, 4),
                      confirm_in_s=self.settings.CONFIRM_SEC)
+
+    def _sample_quote(self, aw: ActiveWindow, quote: Quote) -> None:
+        """Feed one quote to the collector and the crossing counter."""
+        if self.collector is not None:
+            second = int(aw.quote_ts)
+            if second != aw.last_sample_sec:
+                aw.last_sample_sec = second
+                self.collector.add_sample(aw.slot, aw.quote_ts,
+                                          quote.up_mid, quote.down_mid)
+        self._update_mid_crossings(aw, quote, aw.quote_ts)
 
     def _update_mid_crossings(self, aw: ActiveWindow, quote: Quote,
                               ts: float) -> None:

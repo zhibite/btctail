@@ -167,7 +167,8 @@ class MarketService:
     # ── quotes ────────────────────────────────────────────────────────────
 
     async def fetch_quote(self, market: MarketInfo, *, with_books: bool = False,
-                          ws_max_age: float | None = None) -> Quote:
+                          ws_max_age: float | None = None,
+                          mids_only: bool = False) -> Quote:
         quote = Quote(ts=time.time())
         max_age = self._ws_max_age if ws_max_age is None else float(ws_max_age)
         # A "last trade" can legitimately be minutes old in a quiet market;
@@ -205,7 +206,7 @@ class MarketService:
                 (market.token_down, quote.down_mid),
             ) if value is None
         ]
-        missing_last = [
+        missing_last = [] if mids_only else [
             token for token, value in (
                 (market.token_up, quote.up_last),
                 (market.token_down, quote.down_last),
@@ -237,8 +238,12 @@ class MarketService:
 
         # 3) Order books: the shared cache covers normal polling; REST is
         # still used at entry time because the executor needs fresh depth.
-        if with_books or quote.up_bid is None or quote.up_ask is None \
-                or quote.down_bid is None or quote.down_ask is None:
+        # ``mids_only`` (the early crossing sample) skips both the last
+        # trades and the book so one REST midpoint call is all it costs.
+        if not mids_only and (with_books or quote.up_bid is None
+                              or quote.up_ask is None
+                              or quote.down_bid is None
+                              or quote.down_ask is None):
             books = await self._pm.get_order_books([market.token_up, market.token_down])
             up_book = books.get(market.token_up)
             down_book = books.get(market.token_down)
