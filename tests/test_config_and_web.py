@@ -51,19 +51,19 @@ def test_documented_defaults_and_enabled_set():
     doge5 = settings.for_strategy("DOGE", "5m")
     assert (doge5.ENTRY_WINDOW_SEC, doge5.ENTRY_THRESHOLD,
             doge5.CONFIRM_SEC, doge5.MAX_ENTRY_PRICE) == (25, 0.84, 2, 0.98)
-    # 1s sampling + 0.02 deadband, skip after >5 effective 0.5 flips.
+    # Filter off by default after the 10-day paper review.
     assert (doge5.MAX_MID_CROSSINGS, doge5.MID_CROSS_BAND,
-            doge5.MID_CROSS_SAMPLE_SEC) == (5, 0.02, 1)
-    assert btc15.MAX_MID_CROSSINGS == 5
+            doge5.MID_CROSS_SAMPLE_SEC) == (0, 0.02, 1)
+    assert btc15.MAX_MID_CROSSINGS == 0
     # Every 15m strategy samples the 900s window every 5s (180 points).
     assert btc15.MID_CROSS_SAMPLE_SEC == 5
     assert eth15.MID_CROSS_SAMPLE_SEC == 5
     sol15 = settings.for_strategy("SOL", "15m")
     assert (sol15.MAX_MID_CROSSINGS, sol15.MID_CROSS_BAND,
-            sol15.MID_CROSS_SAMPLE_SEC) == (5, 0.02, 5)
+            sol15.MID_CROSS_SAMPLE_SEC) == (0, 0.02, 5)
     sol5 = settings.for_strategy("SOL", "5m")
     assert (sol5.MAX_MID_CROSSINGS, sol5.MID_CROSS_BAND,
-            sol5.MID_CROSS_SAMPLE_SEC) == (5, 0.02, 1)
+            sol5.MID_CROSS_SAMPLE_SEC) == (0, 0.02, 1)
     all_settings = settings.strategy_settings()
     assert len(all_settings) == 14
     enabled = settings.enabled_strategy_settings()
@@ -74,9 +74,9 @@ def test_documented_defaults_and_enabled_set():
         assert strategy.ENTRY_NOTIONAL_USD_LIVE == 5.0
         assert strategy.entry_notional_for("paper") == 10.0
         assert strategy.entry_notional_for("live") == 5.0
-        # The crossing filter is on for every strategy by default; 15m
-        # samples 180 points (5s), 5m samples 1s.
-        assert (strategy.MAX_MID_CROSSINGS, strategy.MID_CROSS_BAND) == (5, 0.02)
+        # The crossing filter is off by default; the 0.02 band and the
+        # 15m 5s / 5m 1s cadence remain for per-strategy opt-in.
+        assert (strategy.MAX_MID_CROSSINGS, strategy.MID_CROSS_BAND) == (0, 0.02)
         assert strategy.MID_CROSS_SAMPLE_SEC == (
             5 if strategy.PERIOD == "15m" else 1
         )

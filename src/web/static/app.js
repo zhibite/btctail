@@ -709,7 +709,7 @@
       if (!tr || !meta || !meta.recommended) return;
       const rec = meta.recommended;
       const fallback = {
-        MAX_MID_CROSSINGS: 5,
+        MAX_MID_CROSSINGS: 0,
         MID_CROSS_BAND: 0.02,
         MID_CROSS_SAMPLE_SEC: meta.period === "15m" ? 5 : 1,
       };

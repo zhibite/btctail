@@ -47,13 +47,13 @@ RECOMMENDED_PARAMS: dict[tuple[str, str], dict[str, float]] = {
                     "confirm_sec": 0, "max_entry_price": 0.93},
     ("SOL", "15m"): {"entry_window_sec": 45, "threshold": 0.84,
                      "confirm_sec": 0, "max_entry_price": 0.93,
-                     # 15m uses 5s sampling (180 points per window).
-                     "max_mid_crossings": 5, "mid_cross_band": 0.02,
+                     # Off by default after the 10-day paper review.
+                     "max_mid_crossings": 0, "mid_cross_band": 0.02,
                      "mid_cross_sample_sec": 5},
     ("SOL", "5m"): {"entry_window_sec": 20, "threshold": 0.84,
                     "confirm_sec": 0, "max_entry_price": 0.95,
-                    # 5m uses 1s sampling.
-                    "max_mid_crossings": 5, "mid_cross_band": 0.02,
+                    # Off by default after the 10-day paper review.
+                    "max_mid_crossings": 0, "mid_cross_band": 0.02,
                     "mid_cross_sample_sec": 1},
     ("XRP", "15m"): {"entry_window_sec": 60, "threshold": 0.90,
                      "confirm_sec": 10, "max_entry_price": 0.94},
@@ -63,11 +63,8 @@ RECOMMENDED_PARAMS: dict[tuple[str, str], dict[str, float]] = {
                       "confirm_sec": 10, "max_entry_price": 0.95},
     ("DOGE", "5m"): {"entry_window_sec": 25, "threshold": 0.84,
                      "confirm_sec": 2, "max_entry_price": 0.98,
-                     # 1s sampling + 0.02 deadband, skip after >5 effective
-                     # flips. 6-month GTD-fill test: +1152 U / DD -110 U at
-                     # 82% of the unfiltered trade count; >3 is tighter
-                     # (+1238 / -98) but filters more winners.
-                     "max_mid_crossings": 5, "mid_cross_band": 0.02,
+                     # Off by default after the 10-day paper review.
+                     "max_mid_crossings": 0, "mid_cross_band": 0.02,
                      "mid_cross_sample_sec": 1},
     ("BNB", "15m"): {"entry_window_sec": 60, "threshold": 0.84,
                      "confirm_sec": 0, "max_entry_price": 0.96},
@@ -430,11 +427,13 @@ class Settings(BaseSettings):
             clone.ENTRY_NOTIONAL_USD = 10.0
             clone.REARM_AFTER_FAILED_CONFIRM = False
 
-        # The crossing filter runs on every strategy by default; the config
-        # page can still turn it off per strategy with MAX_MID_CROSSINGS=0.
-        # A 15m window is 900s and samples every 5s (180 points); 5m samples
-        # every 1s.
-        clone.MAX_MID_CROSSINGS = 5
+        # The crossing filter is off by default: the 2026-11-13..23 paper
+        # review showed it filtered mostly winners (+20 U actual vs +169 U
+        # hypothetical if the skipped signals had entered). Keep the
+        # parameters for per-strategy experiments; 0 disables the filter.
+        # A 15m window is 900s and would sample every 5s (180 points); 5m
+        # would sample every 1s.
+        clone.MAX_MID_CROSSINGS = 0
         clone.MID_CROSS_BAND = 0.02
         clone.MID_CROSS_SAMPLE_SEC = 5 if period == "15m" else 1
 
