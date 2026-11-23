@@ -690,6 +690,16 @@ label.field > span.help {
   -webkit-overflow-scrolling: touch;
   border-radius: 10px;
 }
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 14px 0 2px;
+}
+.pager .page-num { min-width: 34px; padding: 0 8px; }
+.pager .muted { margin-left: 4px; }
 table.data, .card table {
   width: 100%;
   border-collapse: separate;

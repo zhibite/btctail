@@ -489,6 +489,9 @@
     mode: "",
     period: "",
     asset: "",
+    page: 1,
+    pageSize: 20,
+    rows: [],
     async init() {
       $$("[data-mode]").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -512,11 +515,12 @@
       await this.load();
     },
     async load() {
-      const query = [];
+      this.page = 1;
+      const query = ["limit=2000"];
       if (this.mode) query.push("mode=" + this.mode);
       if (this.period) query.push("period=" + this.period);
       if (this.asset) query.push("asset=" + this.asset);
-      const d = await api("/api/trades" + (query.length ? "?" + query.join("&") : ""));
+      const d = await api("/api/trades?" + query.join("&"));
       const s = d.stats;
       setText("#t-trades", fmt.int(s.trades));
       setText("#t-winrate", fmt.pct(s.win_rate));
@@ -553,9 +557,28 @@
         $("#redeem-list").innerHTML = "";
       }
 
-      const rows = d.trades || [];
-      if (!rows.length) { $("#all-trades").innerHTML = '<div class="muted small center" style="padding:24px">暂无交易</div>'; return; }
-      $("#all-trades").innerHTML = "<table><thead><tr><th>策略</th><th>模式</th><th>时间 (UTC)</th><th>方向</th>" +
+      this.rows = d.trades || [];
+      this.renderTable();
+    },
+
+    totalPages() {
+      return Math.max(1, Math.ceil(this.rows.length / this.pageSize));
+    },
+
+    renderTable() {
+      const el = $("#all-trades");
+      const pager = $("#trades-pager");
+      if (!el) return;
+      if (!this.rows.length) {
+        el.innerHTML = '<div class="muted small center" style="padding:24px">暂无交易</div>';
+        if (pager) pager.innerHTML = "";
+        return;
+      }
+      const total = this.totalPages();
+      this.page = Math.min(Math.max(1, this.page), total);
+      const start = (this.page - 1) * this.pageSize;
+      const rows = this.rows.slice(start, start + this.pageSize);
+      el.innerHTML = "<table><thead><tr><th>策略</th><th>模式</th><th>时间 (UTC)</th><th>方向</th>" +
         "<th class='num'>信号价</th><th class='num'>成交价</th><th class='num'>滑点</th>" +
         "<th class='num'>份额</th><th class='num'>成本</th><th class='num'>费用</th>" +
         "<th class='num'>盈亏</th><th>结算</th><th>结果</th></tr></thead><tbody>" +
@@ -575,6 +598,46 @@
             "<td>" + (t.resolved_side || "--") + "</td>" +
             "<td>" + statusTag(t.status) + "</td></tr>";
         }).join("") + "</tbody></table>";
+      this.renderPager(total);
+    },
+
+    renderPager(total) {
+      const pager = $("#trades-pager");
+      if (!pager) return;
+      const current = this.page;
+      const nums = [];
+      const add = (p) => {
+        if (p >= 1 && p <= total && !nums.includes(p)) nums.push(p);
+      };
+      add(1);
+      for (let p = current - 2; p <= current + 2; p++) add(p);
+      add(total);
+      nums.sort((a, b) => a - b);
+      let html = "<button class='btn small ghost' data-page='" + (current - 1) + "'" +
+        (current <= 1 ? " disabled" : "") + ">上一页</button>";
+      nums.forEach((p, i) => {
+        if (i && p - nums[i - 1] > 1) html += "<span class='muted'>…</span>";
+        html += "<button class='btn small page-num " +
+          (p === current ? "primary" : "ghost") + "' data-page='" + p + "'>" + p + "</button>";
+      });
+      html += "<button class='btn small ghost' data-page='" + (current + 1) + "'" +
+        (current >= total ? " disabled" : "") + ">下一页</button>";
+      html += "<span class='muted small'>共 " + fmt.int(this.rows.length) + " 笔 · 第 " +
+        current + " / " + total + " 页 · 每页 " + this.pageSize + " 笔" +
+        (this.rows.length >= 2000 ? "（最多显示 2000 笔）" : "") + "</span>";
+      pager.innerHTML = html;
+      $$("[data-page]", pager).forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const p = Number(btn.getAttribute("data-page"));
+          if (!Number.isFinite(p) || p < 1 || p > total || p === this.page) return;
+          this.page = p;
+          this.renderTable();
+          const card = $("#all-trades");
+          if (card && card.closest(".card")) {
+            card.closest(".card").scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        });
+      });
     },
   };
 
