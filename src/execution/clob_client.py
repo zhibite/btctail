@@ -24,6 +24,10 @@ log = get_logger(__name__)
 
 CLOB_BASE_UNITS = 1_000_000
 POLYGON_CHAIN_ID = 137
+# Fourteen strategies share one ClobClient. The balance is only read for the
+# risk guard, so one lookup every few seconds is enough; 14 concurrent
+# lookups produced HTTP/2 ConnectionTerminated errors on the CLOB.
+BALANCE_CACHE_TTL_S = 5.0
 
 
 def round_down(value: float, tick: float) -> float:
@@ -80,6 +84,10 @@ class ClobClient:
         self._client: Any = None
         self._funder_resolved = ""
         self._init_error = ""
+        self._balance_lock = asyncio.Lock()
+        self._balance_cache: tuple[float, Optional[float]] = (0.0, None)
+        # One attempt per BALANCE_CACHE_TTL_S, successes and failures alike.
+        self._balance_attempt_mono = float("-inf")
         self._init()
 
     # ── init ──────────────────────────────────────────────────────────────
@@ -152,22 +160,46 @@ class ClobClient:
     # ── balances ──────────────────────────────────────────────────────────
 
     async def get_balance(self) -> Optional[float]:
-        """Collateral (USDC) balance. None on error -- never coerced to 0."""
+        """Collateral (pUSD) balance, shared and cached for a few seconds.
+
+        All fourteen strategies share this client and poll the balance for the
+        risk guard. Issuing those lookups concurrently produced HTTP/2
+        ConnectionTerminated errors on the CLOB, so at most one request is
+        made per ``BALANCE_CACHE_TTL_S``: the first caller fetches under the
+        lock, the rest reuse the value. Failed attempts are throttled the same
+        way and return the last known value (None only if there never was
+        one), so a CLOB outage cannot turn into fourteen serial retries.
+        """
         if self._client is None:
             return None
-        try:
-            from py_clob_client_v2 import AssetType, BalanceAllowanceParams
+        now = time.monotonic()
+        cached_at, cached = self._balance_cache
+        if cached is not None and now - cached_at < BALANCE_CACHE_TTL_S:
+            return cached
+        async with self._balance_lock:
+            now = time.monotonic()
+            cached_at, cached = self._balance_cache
+            if cached is not None and now - cached_at < BALANCE_CACHE_TTL_S:
+                return cached
+            if now - self._balance_attempt_mono < BALANCE_CACHE_TTL_S:
+                return cached
+            try:
+                from py_clob_client_v2 import AssetType, BalanceAllowanceParams
 
-            resp = await self._run(
-                self._client.get_balance_allowance,
-                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL),
-            )
-            if not isinstance(resp, dict) or resp.get("balance") is None:
-                return None
-            return float(resp["balance"]) / CLOB_BASE_UNITS
-        except Exception as exc:  # noqa: BLE001
-            log.warning("clob.get_balance_failed", error=str(exc))
-            return None
+                resp = await self._run(
+                    self._client.get_balance_allowance,
+                    BalanceAllowanceParams(asset_type=AssetType.COLLATERAL),
+                )
+                if not isinstance(resp, dict) or resp.get("balance") is None:
+                    return cached
+                value = float(resp["balance"]) / CLOB_BASE_UNITS
+                self._balance_cache = (time.monotonic(), value)
+                return value
+            except Exception as exc:  # noqa: BLE001
+                log.warning("clob.get_balance_failed", error=str(exc))
+                return cached
+            finally:
+                self._balance_attempt_mono = time.monotonic()
 
     async def get_token_balance(self, token_id: str) -> Optional[float]:
         """Shares held for an outcome token. None on error."""
