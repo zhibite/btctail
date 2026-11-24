@@ -558,28 +558,6 @@
       setText("#t-fees", fmt.money(s.fees) + " U");
       sparkline($("#t-equity"), (d.equity || []).map((p) => ({ value: p.cumulative })), { height: 200 });
 
-      const unredeemed = d.unredeemed || [];
-      const banner = $("#redeem-banner");
-      if (unredeemed.length) {
-        banner.className = "alert warn";
-        banner.innerHTML = "有 " + unredeemed.length + " 笔已中奖的仓位尚未赎回（" +
-          fmt.money(unredeemed.reduce((a, t) => a + t.shares, 0)) + " 份额）。请到 " +
-          "<a href='https://polymarket.com/portfolio' target='_blank' rel='noopener'>Polymarket 持仓页</a> 赎回后再点「已赎回」。";
-        $("#redeem-list").innerHTML = "<table><thead><tr><th>策略</th><th>时间 (UTC)</th><th>方向</th><th class='num'>份额</th><th></th></tr></thead><tbody>" +
-          unredeemed.map((t) => "<tr><td>" + fmt.esc((t.asset || "BTC") + " " + t.period) + "</td><td class='mono'>" + fmt.date(t.entry_ts) +
-            "</td><td>" + t.side + "</td><td class='num'>" + fmt.price(t.shares, 4) +
-            "</td><td><button class='btn small' data-redeemed='" + t.id + "'>已赎回</button></td></tr>").join("") +
-          "</tbody></table>";
-        $$("[data-redeemed]").forEach((btn) => btn.addEventListener("click", async () => {
-          await api("/api/trades/" + btn.getAttribute("data-redeemed") + "/redeemed", { method: "POST" });
-          toast("已标记", "ok");
-          this.load();
-        }));
-      } else {
-        banner.className = "hidden";
-        $("#redeem-list").innerHTML = "";
-      }
-
       this.rows = d.trades || [];
       this.renderTable();
     },
