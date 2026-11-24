@@ -493,6 +493,7 @@
     pageSize: 20,
     rows: [],
     async init() {
+      await this.loadDefaultMode();
       $$("[data-mode]").forEach((btn) => {
         btn.addEventListener("click", () => {
           this.mode = btn.getAttribute("data-mode");
@@ -514,6 +515,28 @@
       });
       await this.load();
     },
+
+    async loadDefaultMode() {
+      // If every enabled strategy is on the same mode, open the page on that
+      // mode instead of "全部模式". Mixed paper/live keeps the all view.
+      try {
+        const status = await api("/api/status");
+        const modes = (status.strategies || [])
+          .map((s) => s.app || {})
+          .filter((app) => app.enabled !== false)
+          .map((app) => app.mode)
+          .filter((mode) => mode === "paper" || mode === "live");
+        const unique = Array.from(new Set(modes));
+        if (unique.length === 1) {
+          this.mode = unique[0];
+          const btn = document.querySelector("[data-mode='" + this.mode + "']");
+          if (btn) activate("[data-mode]", btn);
+        }
+      } catch (err) {
+        // Status is optional; fall back to the "全部模式" default.
+      }
+    },
+
     async load() {
       this.page = 1;
       const query = ["limit=2000"];
