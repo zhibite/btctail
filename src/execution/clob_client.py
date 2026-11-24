@@ -222,9 +222,19 @@ class ClobClient:
     # ── orders ────────────────────────────────────────────────────────────
 
     async def place_fak_buy(
-        self, token_id: str, notional: float, limit_price: float, tick_size: float
+        self,
+        token_id: str,
+        notional: float,
+        limit_price: float,
+        tick_size: float,
+        *,
+        position_id: str = "",
     ) -> FillResult:
-        """Marketable BUY of `notional` USDC, never paying above `limit_price`."""
+        """Marketable BUY of `notional` USDC, never paying above `limit_price`.
+
+        ``position_id`` selects Exchange V3 signing for Polymarket's newer
+        ("v2") markets; an empty value keeps the legacy token-id path.
+        """
         if self._client is None:
             return FillResult(False, error=self._init_error or "clob not configured")
 
@@ -236,12 +246,15 @@ class ClobClient:
         try:
             from py_clob_client_v2 import MarketOrderArgs, OrderType
 
+            order_asset = (
+                {"position_id": position_id} if position_id else {"token_id": token_id}
+            )
             args = MarketOrderArgs(
-                token_id=token_id,
                 amount=float(amount),
                 side="BUY",
                 price=float(price),
                 order_type=OrderType.FAK,
+                **order_asset,
             )
             resp = await self._run(
                 self._client.create_and_post_market_order, args,
@@ -271,7 +284,13 @@ class ClobClient:
         return result
 
     async def place_fak_sell(
-        self, token_id: str, shares: float, limit_price: float, tick_size: float
+        self,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        tick_size: float,
+        *,
+        position_id: str = "",
     ) -> FillResult:
         """Optional flatten: marketable SELL of `shares` at >= `limit_price`."""
         if self._client is None:
@@ -283,12 +302,15 @@ class ClobClient:
         try:
             from py_clob_client_v2 import MarketOrderArgs, OrderType
 
+            order_asset = (
+                {"position_id": position_id} if position_id else {"token_id": token_id}
+            )
             args = MarketOrderArgs(
-                token_id=token_id,
                 amount=float(size),
                 side="SELL",
                 price=float(price),
                 order_type=OrderType.FAK,
+                **order_asset,
             )
             resp = await self._run(
                 self._client.create_and_post_market_order, args,
@@ -355,10 +377,13 @@ class ClobClient:
         *,
         neg_risk: bool = False,
         post_only: bool = True,
+        position_id: str = "",
     ) -> OrderAck:
         """Rest a GTC limit BUY for `shares` at `price`.
 
-        The CLOB enforces a 5-share minimum on resting orders, so anything
+        ``position_id`` selects Exchange V3 signing for Polymarket's newer
+        ("v2") markets; an empty value keeps the legacy token-id path. The
+        CLOB enforces a 5-share minimum on resting orders, so anything
         smaller is refused here (the caller can fall back to FAK).
         """
         if self._client is None:
@@ -372,11 +397,14 @@ class ClobClient:
         try:
             from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions
 
+            order_asset = (
+                {"position_id": position_id} if position_id else {"token_id": token_id}
+            )
             args = OrderArgs(
-                token_id=token_id,
                 price=float(price_q),
                 size=float(size_q),
                 side="BUY",
+                **order_asset,
             )
             options = PartialCreateOrderOptions(
                 tick_size=str(tick_size), neg_risk=bool(neg_risk)

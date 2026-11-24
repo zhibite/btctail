@@ -205,9 +205,34 @@ class PolymarketClient:
         if not condition_id:
             return None
 
+        # Newer ("v2") markets carry position ids and must be signed against
+        # Exchange V3; the list is parallel to `outcomes`. Legacy markets
+        # omit the field and keep the token-id path.
+        position_ids = _load_json_list(market.get("positionIds"))
+        position_up = position_down = ""
+        if len(position_ids) > max(idx_up, idx_down):
+            position_up = str(position_ids[idx_up])
+            position_down = str(position_ids[idx_down])
+        elif str(market.get("version") or "").lower() == "v2":
+            # A v2 market without position ids cannot be signed for Exchange
+            # V3; the order would be rejected later, so surface it here.
+            log.warning("gamma.v2_market_missing_position_ids",
+                        slug=market.get("slug"))
+
         end_ts = _parse_ts(market.get("endDate") or market.get("end_date"))
         if end_ts is None:
             end_ts = slot + (300 if period == "5m" else 900)
+
+        # Gamma reports the market's real minimum tick (ETH is 0.001, most
+        # others 0.01). The SDK only supports the four documented values;
+        # anything else keeps the historical default.
+        tick_size = 0.01
+        try:
+            raw_tick = float(market.get("orderPriceMinTickSize") or 0.0)
+        except (TypeError, ValueError):
+            raw_tick = 0.0
+        if raw_tick in (0.1, 0.01, 0.001, 0.0001):
+            tick_size = raw_tick
 
         fee_rate = None
         for key in ("feeRate", "fee_rate"):
@@ -232,7 +257,9 @@ class PolymarketClient:
             token_up=str(token_ids[idx_up]),
             token_down=str(token_ids[idx_down]),
             end_ts=int(end_ts),
-            tick_size=0.01,
+            position_up=position_up,
+            position_down=position_down,
+            tick_size=tick_size,
             neg_risk=_as_bool(market.get("negRisk")),
             fee_rate=fee_rate,
             volume=volume,

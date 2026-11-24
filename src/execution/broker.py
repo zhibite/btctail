@@ -223,6 +223,7 @@ class LiveBroker(Broker):
         ack = await self._clob.place_limit_buy(
             market.token_for(side), shares, price, market.tick_size,
             neg_risk=market.neg_risk, post_only=post_only,
+            position_id=market.position_for(side),
         )
         if not ack.ok:
             log.warning("broker.limit_rejected", side=side.value,
@@ -273,6 +274,7 @@ class LiveBroker(Broker):
             notional=stake,
             limit_price=limit_price,
             tick_size=market.tick_size,
+            position_id=market.position_for(side),
         )
         if not result.filled:
             return EntryFill(False, error=result.error or "no_fill")

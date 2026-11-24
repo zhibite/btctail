@@ -37,6 +37,11 @@ class MarketInfo:
     token_up: str
     token_down: str
     end_ts: int
+    # Polymarket's newer ("v2") markets sign against Exchange V3 and are
+    # addressed by position id; legacy markets leave these empty and use the
+    # clob token ids above.
+    position_up: str = ""
+    position_down: str = ""
     tick_size: float = 0.01
     neg_risk: bool = False
     fee_rate: Optional[float] = None
@@ -55,6 +60,13 @@ class MarketInfo:
 
     def token_for(self, side: Side) -> str:
         return self.token_up if side is Side.UP else self.token_down
+
+    def position_for(self, side: Side) -> str:
+        return self.position_up if side is Side.UP else self.position_down
+
+    @property
+    def uses_position_ids(self) -> bool:
+        return bool(self.position_up and self.position_down)
 
     def side_for_token(self, token_id: str) -> Optional[Side]:
         if token_id == self.token_up:
