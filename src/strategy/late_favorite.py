@@ -347,10 +347,14 @@ class LateFavoriteStrategy:
 
 
 def taker_fee(shares: float, price: float, fee_rate: float) -> float:
-    """Official Polymarket formula: C * feeRate * p * (1 - p)."""
+    """Official Polymarket formula: C * feeRate * p * (1 - p).
+
+    The protocol rounds the USDC amount to 5 decimal places (smallest fee
+    0.00001), so mirror that in the paper/backtest accounting.
+    """
     if shares <= 0 or fee_rate <= 0:
         return 0.0
-    return shares * fee_rate * price * (1.0 - price)
+    return round(shares * fee_rate * price * (1.0 - price), 5)
 
 
 def trade_pnl(shares: float, cost: float, fee: float, won: bool) -> float:

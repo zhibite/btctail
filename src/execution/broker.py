@@ -94,8 +94,14 @@ def resolve_fee_rate(settings: Settings, market: MarketInfo) -> float:
 
     The market's own ``feeRate`` (Gamma) wins when present and sane -- that
     is the field the strategy doc says to re-check per market. Otherwise the
-    configured category rate (0.07 for crypto) is used. A missing value is
-    NOT treated as zero: that would silently overstate PnL.
+    official category rate applies (docs.polymarket.com/trading/fees,
+    checked 2026-11-24):
+
+      * BTC 5m/15m up/down: 0.05
+      * every other crypto market: 0.01
+
+    Makers are never charged; the maker rate is 0 in the execution path. A
+    missing value is NOT treated as zero: that would silently overstate PnL.
 
     ``FEE_RATE_AUTODETECT`` controls a different thing: whether the
     MarketService is allowed to overwrite this field from the CLOB
@@ -103,6 +109,10 @@ def resolve_fee_rate(settings: Settings, market: MarketInfo) -> float:
     """
     if market.fee_rate and 0 < market.fee_rate < 0.5:
         return float(market.fee_rate)
+    asset = str(getattr(market, "asset", "") or getattr(settings, "ASSET", "")).upper()
+    period = str(getattr(market, "period", "") or getattr(settings, "PERIOD", ""))
+    if asset == "BTC" and period in ("5m", "15m"):
+        return float(settings.TAKER_FEE_RATE_BTC_5M15M)
     return float(settings.TAKER_FEE_RATE)
 
 

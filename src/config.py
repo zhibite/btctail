@@ -221,12 +221,17 @@ class Settings(BaseSettings):
     EXEC_LIMIT_MAX: float = 0.99
     MAX_SPREAD_AT_ENTRY: float = 0.06  # 0 disables
     MIN_BOOK_DEPTH_USD: float = 0.0    # 0 disables; checks depth at/below limit
-    TAKER_FEE_RATE: float = 0.07       # fee = shares * rate * p * (1-p)
+    # Official Polymarket fees (docs.polymarket.com/trading/fees):
+    #   fee = shares * rate * p * (1 - p), takers only; makers always 0.
+    #   Crypto — BTC 5m/15m up/down: 0.05
+    #   Crypto — all other markets:  0.01
+    TAKER_FEE_RATE: float = 0.01
+    TAKER_FEE_RATE_BTC_5M15M: float = 0.05
     # Prefer the market's own feeRate (Gamma field) when present. The CLOB
     # /fee-rate endpoint is only consulted when this is on: its `base_fee`
     # unit has been observed both as bps and as the raw rate, so leaving it
-    # off keeps accounting pinned to the documented 0.07 until an operator
-    # has verified the value for a market.
+    # off keeps accounting pinned to the documented category rates until an
+    # operator has verified the value for a market.
     FEE_RATE_AUTODETECT: bool = False
     USE_MARKET_WS: bool = True
     # Prefer the shared market WebSocket for signal midpoints and last
@@ -367,6 +372,17 @@ class Settings(BaseSettings):
             return float(self.ENTRY_NOTIONAL_USD_LIVE)
         return float(self.ENTRY_NOTIONAL_USD_PAPER)
 
+    @property
+    def default_taker_fee_rate(self) -> float:
+        """Official category taker rate for this strategy's market.
+
+        BTC 5m/15m up/down uses its own 0.05 rate; every other crypto
+        market uses the generic 0.01 rate. Makers are never charged.
+        """
+        if (self.ASSET or "").strip().upper() == "BTC" and self.PERIOD in ("5m", "15m"):
+            return float(self.TAKER_FEE_RATE_BTC_5M15M)
+        return float(self.TAKER_FEE_RATE)
+
     def strategy_params(self) -> dict:
         """The subset the strategy engine consumes (for this settings' PERIOD)."""
         return {
@@ -496,6 +512,7 @@ class Settings(BaseSettings):
                      "MAX_ENTRY_PRICE", "MIN_ENTRY_PRICE", "STAKE_USD",
                      "ENTRY_NOTIONAL_USD_PAPER", "ENTRY_NOTIONAL_USD_LIVE",
                      "ENTRY_NOTIONAL_USD", "EXEC_SLIPPAGE", "TAKER_FEE_RATE",
+                     "TAKER_FEE_RATE_BTC_5M15M",
                      "PORTFOLIO_DAILY_LOSS_LIMIT_USD"):
             try:
                 if not math.isfinite(float(getattr(self, name))):
@@ -530,6 +547,8 @@ class Settings(BaseSettings):
             errors.append("EXEC_SLIPPAGE 不能为负")
         if self.TAKER_FEE_RATE < 0 or self.TAKER_FEE_RATE > 0.5:
             errors.append("TAKER_FEE_RATE 必须在 [0, 0.5] 内")
+        if self.TAKER_FEE_RATE_BTC_5M15M < 0 or self.TAKER_FEE_RATE_BTC_5M15M > 0.5:
+            errors.append("TAKER_FEE_RATE_BTC_5M15M 必须在 [0, 0.5] 内")
         if self.TRADING_MODE not in ("paper", "live"):
             errors.append("TRADING_MODE 必须是 paper 或 live")
         if self.ENTRY_ORDER_TYPE not in ("gtd", "fak"):
@@ -621,8 +640,11 @@ TUNABLE_SPECS: dict[str, dict] = {
                             "label": "最大买卖价差",
                             "help": "入场时 (ask-bid) 超过该值则放弃。0=关闭。"},
     "TAKER_FEE_RATE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.2, "step": 0.001,
-                       "label": "官方费率",
-                       "help": "fee = 份额 × 费率 × p × (1-p)。Crypto 类目默认 0.07。"},
+                       "label": "官方费率（其他 Crypto）",
+                       "help": "fee = 份额 × 费率 × p × (1-p)。Crypto 其他市场默认 0.01；BTC 5m/15m 用下一项。"},
+    "TAKER_FEE_RATE_BTC_5M15M": {"group": "execution", "type": "float", "min": 0.0, "max": 0.2, "step": 0.001,
+                                 "label": "官方费率（BTC 5m/15m）",
+                                 "help": "BTC 5 分钟/15 分钟 up/down 的 taker 费率，官方默认 0.05；maker 始终 0。"},
     "DAILY_LOSS_LIMIT_USD": {"group": "risk", "type": "float", "min": 0, "max": 10000, "step": 5,
                              "label": "单策略单日亏损上限(USDC)",
                              "help": "单个策略当日已实现亏损达到该值即停止该策略当日交易。0=关闭。"},

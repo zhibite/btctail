@@ -26,8 +26,8 @@ def book(asks: list[tuple[float, float]]) -> OrderBook:
 def broker(tmp_path):
     settings = Settings(
         DATA_DIR=str(tmp_path), PAPER_START_BALANCE=1000.0,
-        PAPER_SLIPPAGE=0.005, PAPER_USE_BOOK=True, TAKER_FEE_RATE=0.07,
-        FEE_RATE_AUTODETECT=False,
+        PAPER_SLIPPAGE=0.005, PAPER_USE_BOOK=True, TAKER_FEE_RATE=0.01,
+        TAKER_FEE_RATE_BTC_5M15M=0.05, FEE_RATE_AUTODETECT=False,
     )
     db = DB(tmp_path / "b.db")
     yield PaperBroker(settings, db)
@@ -42,7 +42,7 @@ async def test_walks_the_book(broker):
     expected_shares = 4.0 + (10.0 - 4.0 * 0.93) / 0.94
     assert fill.shares == pytest.approx(expected_shares)
     assert fill.avg_price == pytest.approx(10.0 / expected_shares)
-    assert fill.fee == pytest.approx(taker_fee(expected_shares, fill.avg_price, 0.07))
+    assert fill.fee == pytest.approx(taker_fee(expected_shares, fill.avg_price, 0.05))
     assert fill.partial is False
 
 
@@ -78,10 +78,14 @@ async def test_signal_price_fallback_respects_the_limit(broker):
 
 
 def test_fee_rate_prefers_market_value(tmp_path):
-    settings = Settings(DATA_DIR=str(tmp_path), TAKER_FEE_RATE=0.07,
+    settings = Settings(DATA_DIR=str(tmp_path), TAKER_FEE_RATE=0.01,
+                        TAKER_FEE_RATE_BTC_5M15M=0.05,
                         FEE_RATE_AUTODETECT=False)
-    assert resolve_fee_rate(settings, market(fee_rate=0.05)) == pytest.approx(0.05)
-    assert resolve_fee_rate(settings, market(fee_rate=None)) == pytest.approx(0.07)
+    assert resolve_fee_rate(settings, market(fee_rate=0.02)) == pytest.approx(0.02)
+    assert resolve_fee_rate(settings, market(fee_rate=None)) == pytest.approx(0.05)
+    doge = market(fee_rate=None)
+    doge.asset, doge.period = "DOGE", "5m"
+    assert resolve_fee_rate(settings, doge) == pytest.approx(0.01)
 
 
 async def test_paper_balance_tracks_realized_and_open(broker, tmp_path):

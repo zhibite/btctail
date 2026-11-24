@@ -50,7 +50,7 @@ def _params(args, settings) -> BacktestParams:
         min_entry_price=pick(args.min_entry_price, strategy.MIN_ENTRY_PRICE),
         stake=pick(args.stake, strategy.STAKE_USD),
         slippage=pick(args.slippage, 0.005),
-        fee_rate=pick(args.fee_rate, strategy.TAKER_FEE_RATE),
+        fee_rate=pick(args.fee_rate, strategy.default_taker_fee_rate),
     )
 
 
@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
             min_entry_price=strategy.MIN_ENTRY_PRICE,
             stake=strategy.STAKE_USD,
             slippage=args.slippage,
-            fee_rate=strategy.TAKER_FEE_RATE,
+            fee_rate=strategy.default_taker_fee_rate,
         )
         result = run_backtest(args.dataset_root, args.asset, args.period,
                               args.start, args.end, params)

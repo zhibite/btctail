@@ -129,7 +129,7 @@ class ResearchService:
             min_entry_price=pick("min_entry_price", "MIN_ENTRY_PRICE", 0.0),
             stake=pick("stake", "STAKE_USD", 10.0),
             slippage=float(payload.get("slippage") or 0.005),
-            fee_rate=float(payload.get("fee_rate") or strategy.TAKER_FEE_RATE),
+            fee_rate=float(payload.get("fee_rate") or strategy.default_taker_fee_rate),
         )
 
     def _new_job(self, kind: str, params: dict, period: str = "15m") -> Job:

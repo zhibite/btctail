@@ -47,7 +47,7 @@ class BacktestParams:
     min_entry_price: float = 0.0
     stake: float = 10.0
     slippage: float = 0.005
-    fee_rate: float = 0.07
+    fee_rate: float = 0.01
     fee_model: str = "official"     # official | none
 
     def strategy_params(self) -> StrategyParams:

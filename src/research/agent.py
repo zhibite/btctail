@@ -323,7 +323,7 @@ class TuningAgent:
                 **self.settings.strategy_params(),
                 "stake": self.settings.ENTRY_NOTIONAL_USD,
                 "slippage": self.settings.EXEC_SLIPPAGE,
-                "fee_rate": self.settings.TAKER_FEE_RATE,
+                "fee_rate": self.settings.default_taker_fee_rate,
             },
         }
 
@@ -507,7 +507,7 @@ class TuningAgent:
         return {"history": history, "live": live,
                 "baseline": {"entry_window_sec": 60, "threshold": 0.90, "confirm_sec": 10,
                              "max_entry_price": 0.94, "stake": 10.0,
-                             "slippage": 0.005, "fee_rate": 0.07}}
+                             "slippage": 0.005, "fee_rate": self.settings.default_taker_fee_rate}}
 
     async def _run_backtest(self, payload: dict) -> str:
         self._consume_backtest_budget()
@@ -520,7 +520,7 @@ class TuningAgent:
             min_entry_price=payload.get("min_entry_price", live["min_entry_price"]),
             stake=payload.get("stake", self.settings.STAKE_USD),
             slippage=payload.get("slippage", self.settings.EXEC_SLIPPAGE),
-            fee_rate=payload.get("fee_rate", self.settings.TAKER_FEE_RATE),
+            fee_rate=payload.get("fee_rate", self.settings.default_taker_fee_rate),
         )
         errors = params.strategy_params().validation_errors()
         if errors:
@@ -604,7 +604,7 @@ class TuningAgent:
             ),
             stake=self.settings.STAKE_USD,
             slippage=payload.get("slippage", self.settings.EXEC_SLIPPAGE),
-            fee_rate=payload.get("fee_rate", self.settings.TAKER_FEE_RATE),
+            fee_rate=payload.get("fee_rate", self.settings.default_taker_fee_rate),
         )
         errors = params.strategy_params().validation_errors()
         if errors:
