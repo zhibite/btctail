@@ -77,9 +77,13 @@ class FakeBroker(Broker):
     async def balance(self):
         return 1000.0
 
-    async def place_limit_buy(self, market, side, shares, price):
+    async def place_limit_buy(self, market, side, shares, price, post_only=True):
+        self.calls.append({
+            "side": side, "shares": shares, "price": price,
+            "stake": shares * price, "post_only": post_only,
+        })
         return LimitOrder(order_id="fake-limit", token_id="t", side=side,
-                          price=price, shares=shares, maker=True, mode=self.mode)
+                          price=price, shares=shares, maker=post_only, mode=self.mode)
 
     async def limit_fill(self, order, quote=None):
         if quote is None:
@@ -173,7 +177,7 @@ async def test_entry_confirm_and_settlement(tmp_path):
     trade = trades[0]
     assert trade["side"] == "UP"
     assert trade["signal_price"] == pytest.approx(0.93)
-    assert trade["entry_price"] == pytest.approx(0.935)
+    assert trade["entry_price"] == pytest.approx(0.94)
     assert trade["status"] == "open"
     assert trade["fee"] > 0
 
@@ -411,7 +415,7 @@ async def test_live_mode_uses_the_live_notional(tmp_path):
     await runtime._maybe_refresh_quote(aw, END - 50)
     set_clock(runtime, END - 40)
     await runtime._maybe_refresh_quote(aw, END - 40)
-    assert broker.calls and broker.calls[0]["stake"] == pytest.approx(5.0)
+    assert broker.calls and broker.calls[0]["stake"] == pytest.approx(5.0, abs=0.01)
 
 
 async def test_disabled_strategy_does_not_open_a_window(tmp_path):

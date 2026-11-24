@@ -175,9 +175,13 @@ class Settings(BaseSettings):
     # Legacy/backtest notional. ``for_strategy`` mirrors the paper size here
     # so research and paper execution stay aligned.
     ENTRY_NOTIONAL_USD: float = 10.0
-    # "gtd": rest a maker limit at the signal price, then optionally fall
-    # back to FAK if it has not filled. "fak": send a taker order directly.
-    ENTRY_ORDER_TYPE: str = "gtd"
+    # "limit": send a marketable GTC limit at signal + EXEC_SLIPPAGE with
+    #          post_only=False. It uses the proven limit-order signing and
+    #          crosses the spread, so it fills like a taker without the
+    #          market-order signing path.
+    # "gtd":   rest a maker limit at the signal price (legacy, rarely fills).
+    # "fak":   direct FAK market order (legacy; Safe signing issue observed).
+    ENTRY_ORDER_TYPE: str = "limit"
     GTD_FILL_TIMEOUT_S: float = 3.0
     GTD_POST_ONLY: bool = True
     ENTRY_FALLBACK_FAK: bool = True
@@ -551,8 +555,8 @@ class Settings(BaseSettings):
             errors.append("TAKER_FEE_RATE_BTC_5M15M 必须在 [0, 0.5] 内")
         if self.TRADING_MODE not in ("paper", "live"):
             errors.append("TRADING_MODE 必须是 paper 或 live")
-        if self.ENTRY_ORDER_TYPE not in ("gtd", "fak"):
-            errors.append("ENTRY_ORDER_TYPE 必须是 gtd 或 fak")
+        if self.ENTRY_ORDER_TYPE not in ("limit", "gtd", "fak"):
+            errors.append("ENTRY_ORDER_TYPE 必须是 limit / gtd / fak")
         for name in ("ENTRY_NOTIONAL_USD_PAPER", "ENTRY_NOTIONAL_USD_LIVE",
                      "ENTRY_NOTIONAL_USD"):
             value = float(getattr(self, name))
@@ -561,7 +565,7 @@ class Settings(BaseSettings):
             # A GTD is sized in shares; at the highest allowed price the
             # order must still reach the CLOB's 5-share minimum.
             if (
-                self.ENTRY_ORDER_TYPE == "gtd"
+                self.ENTRY_ORDER_TYPE in ("limit", "gtd")
                 and self.MAX_ENTRY_PRICE > 0
                 and value / self.MAX_ENTRY_PRICE < 5
             ):
@@ -621,21 +625,26 @@ TUNABLE_SPECS: dict[str, dict] = {
     "EXEC_SLIPPAGE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.05, "step": 0.001,
                       "label": "执行滑点上限",
                       "help": "GTD/FAK 限价 = 信号价 + 该值。回测敏感性 0.005 / 0.01。"},
-    "ENTRY_ORDER_TYPE": {"group": "execution", "type": "str", "options": ["gtd", "fak"],
+    "ENTRY_ORDER_TYPE": {"group": "execution", "type": "str", "options": ["limit", "gtd", "fak"],
                          "label": "下单方式",
-                         "help": "gtd = 先挂限价卖单（maker，费率 0）；fak = 直接吃单。"},
+                         "hidden": True,
+                         "help": "limit = taker limit（信号价+滑点，post-only 关闭）；gtd/fak 为旧模式。"},
     "GTD_FILL_TIMEOUT_S": {"group": "execution", "type": "float", "min": 0.5, "max": 30, "step": 0.5,
-                           "label": "GTD 等待成交(秒)",
+                           "label": "限价单等待成交(秒)",
+                           "hidden": True,
                            "help": "挂单后最多等这么久；仍未成交则按需回退 FAK 或放弃。"},
     "GTD_POST_ONLY": {"group": "execution", "type": "bool",
                       "label": "GTD 只做 maker",
-                      "help": "开启后限价单不会主动吃单；若会成交则被拒绝并回退。"},
+                      "hidden": True,
+                      "help": "旧 GTD 模式的参数；taker limit 固定 post-only=false。"},
     "ENTRY_FALLBACK_FAK": {"group": "execution", "type": "bool",
-                           "label": "GTD 未成交时回退 FAK",
-                           "help": "关闭则 GTD 没成交就放弃本窗口。"},
+                           "label": "限价未成交时回退 FAK",
+                           "hidden": True,
+                           "help": "旧模式的参数；taker limit 直接吃卖一。"},
     "MAKER_FEE_RATE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.2, "step": 0.001,
                        "label": "Maker 费率",
-                       "help": "Crypto 类目 maker 费率通常为 0。"},
+                       "hidden": True,
+                       "help": "Maker 始终 0；taker limit 按官方 taker 费率。"},
     "MAX_SPREAD_AT_ENTRY": {"group": "execution", "type": "float", "min": 0.0, "max": 0.3, "step": 0.005,
                             "label": "最大买卖价差",
                             "help": "入场时 (ask-bid) 超过该值则放弃。0=关闭。"},

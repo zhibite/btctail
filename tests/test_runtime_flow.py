@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from src.config import Settings
-from src.execution.broker import Broker, EntryFill
+from src.execution.broker import Broker, EntryFill, LimitFill, LimitOrder
 from src.market.market_service import Quote
 from src.market.models import MarketInfo, Side
 from src.persistence.db import DB
@@ -57,6 +57,21 @@ class FakeBroker(Broker):
 
     async def balance(self):
         return 1000.0
+
+    async def place_limit_buy(self, market, side, shares, price, post_only=True):
+        return LimitOrder(order_id="fake-limit", token_id="t", side=side,
+                          price=price, shares=shares, maker=post_only, mode=self.mode)
+
+    async def limit_fill(self, order, quote=None):
+        if quote is None:
+            return LimitFill()
+        ask = quote.ask(order.side)
+        if ask is not None and ask <= order.price + 1e-9:
+            return LimitFill(filled=order.shares, avg_price=order.price, done=True)
+        return LimitFill()
+
+    async def cancel(self, order):
+        return True
 
     async def buy(self, market, side, signal_price, stake, limit_price, quote=None):
         price = min(limit_price, signal_price + 0.005)

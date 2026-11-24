@@ -70,7 +70,8 @@ class Broker:
         raise NotImplementedError
 
     async def place_limit_buy(
-        self, market: MarketInfo, side: Side, shares: float, price: float
+        self, market: MarketInfo, side: Side, shares: float, price: float,
+        post_only: bool = True,
     ) -> Optional[LimitOrder]:  # pragma: no cover - interface
         return None
 
@@ -132,12 +133,13 @@ class PaperBroker(Broker):
         return float(self._settings.PAPER_START_BALANCE) + realized - committed
 
     async def place_limit_buy(
-        self, market: MarketInfo, side: Side, shares: float, price: float
+        self, market: MarketInfo, side: Side, shares: float, price: float,
+        post_only: bool = True,
     ) -> Optional[LimitOrder]:
         return LimitOrder(
             order_id=f"paper-limit-{int(time.time() * 1000)}",
             token_id=market.token_for(side), side=side, price=price,
-            shares=shares, maker=True, mode="paper",
+            shares=shares, maker=post_only, mode="paper",
         )
 
     async def limit_fill(
@@ -215,11 +217,12 @@ class LiveBroker(Broker):
         return await self._clob.get_balance()
 
     async def place_limit_buy(
-        self, market: MarketInfo, side: Side, shares: float, price: float
+        self, market: MarketInfo, side: Side, shares: float, price: float,
+        post_only: bool = True,
     ) -> Optional[LimitOrder]:
         ack = await self._clob.place_limit_buy(
             market.token_for(side), shares, price, market.tick_size,
-            neg_risk=market.neg_risk, post_only=bool(self._settings.GTD_POST_ONLY),
+            neg_risk=market.neg_risk, post_only=post_only,
         )
         if not ack.ok:
             log.warning("broker.limit_rejected", side=side.value,
@@ -228,7 +231,7 @@ class LiveBroker(Broker):
         return LimitOrder(
             order_id=ack.order_id, token_id=market.token_for(side), side=side,
             price=ack.price or price, shares=ack.placed_size or shares,
-            maker=bool(self._settings.GTD_POST_ONLY), mode="live",
+            maker=post_only, mode="live",
         )
 
     async def limit_fill(

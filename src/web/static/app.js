@@ -874,7 +874,7 @@
         const groups = [["sizing", "单笔金额"], ["execution", "执行"], ["risk", "风控"]];
         let html = "";
         groups.forEach(([group, label]) => {
-          const items = Object.entries(cfg.specs).filter(([, spec]) => spec.group === group);
+          const items = Object.entries(cfg.specs).filter(([, spec]) => spec.group === group && !spec.hidden);
           if (!items.length) return;
           html += "<div class='card-title plain' style='grid-column:1/-1;margin-top:6px'>" +
             label + "</div>";

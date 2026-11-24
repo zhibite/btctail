@@ -732,49 +732,69 @@ class Runtime:
             aw.signal_recorded = True
             return
 
+        use_limit = settings.ENTRY_ORDER_TYPE == "limit" and shares >= 5
         use_gtd = settings.ENTRY_ORDER_TYPE == "gtd" and shares >= 5
-        if settings.ENTRY_ORDER_TYPE == "gtd" and not use_gtd:
-            log.warning("exec.gtd_below_min", slot=aw.slot, shares=shares,
-                        note="GTD 挂单最少 5 股，本次改用 FAK")
+        if settings.ENTRY_ORDER_TYPE in ("limit", "gtd") \
+                and not (use_limit or use_gtd):
+            log.warning("exec.limit_below_min", slot=aw.slot, shares=shares,
+                        note="限价单最少 5 股，本次改用 FAK")
+        order_type = "limit" if use_limit else ("gtd" if use_gtd else "fak")
 
         log.info(
             "exec.sending", slot=aw.slot, side=decision.side.value,
             signal_price=round(decision.price, 4),
             exec_price=round(current, 4), limit=limit,
             shares=shares, notional=notional, ask=ask,
-            order_type="gtd" if use_gtd else "fak",
+            order_type=order_type,
             spread=spread, depth=depth, mode=mode,
             mid_crossings=aw.mid_cross_count,
         )
 
         entry_info: dict = {
-            "order_type": "gtd" if use_gtd else "fak",
+            "order_type": order_type,
             "entry_notional_usd": notional,
             "planned_shares": round(shares, 4),
         }
         fill: Optional[EntryFill] = None
 
-        if use_gtd:
-            # Rest at the confirmed mid, not at the slippage limit: a buy at
-            # the ask would cross and pay taker fees. The FAK fallback uses
-            # the full signal+slippage limit.
-            rest_price = round_down(decision.price, market.tick_size)
+        if use_limit or use_gtd:
+            if use_limit:
+                # Taker limit: a post_only=False GTC limit at the
+                # signal+slippage limit uses the proven limit-order signing
+                # and crosses the spread like a taker.
+                rest_price = limit
+                post_only = False
+            else:
+                # Legacy GTD: rest at the confirmed mid, post-only.
+                rest_price = round_down(decision.price, market.tick_size)
+                post_only = bool(settings.GTD_POST_ONLY)
             order = await self.broker.place_limit_buy(
-                market, decision.side, shares, rest_price
+                market, decision.side, shares, rest_price, post_only=post_only
             )
             if order is None:
                 entry_info["fallback"] = "place_failed"
-                if settings.ENTRY_FALLBACK_FAK and aw.end_ts - self._now() > 3.0:
+                if (not use_limit and settings.ENTRY_FALLBACK_FAK
+                        and aw.end_ts - self._now() > 3.0):
                     fill = await self._entry_fak(market, decision, fresh, limit, notional)
                 else:
-                    self._record_signal(aw, decision="skip", skip_reason="gtd_place_failed",
-                                        decision_obj=decision, confirm_price=current,
-                                        extra={"limit": limit, "ask": ask})
+                    self._record_signal(
+                        aw, decision="skip",
+                        skip_reason=("limit_place_failed" if use_limit
+                                     else "gtd_place_failed"),
+                        decision_obj=decision, confirm_price=current,
+                        extra={"limit": limit, "ask": ask,
+                               "order_type": order_type},
+                    )
                     aw.signal_recorded = True
                     return
             else:
                 state = await self._wait_limit_fill(order, aw, market)
                 entry_info.update({
+                    "rest_price": order.price,
+                    "post_only": order.maker,
+                    "limit_filled": round(state.filled, 4),
+                    "limit_order_id": order.order_id,
+                    # Legacy keys kept for older dashboards/exports.
                     "gtd_price": order.price,
                     "gtd_filled": round(state.filled, 4),
                     "maker": order.maker,
@@ -792,7 +812,7 @@ class Runtime:
                                   filled=round(state.filled, 4),
                                   shares=order.shares)
                         self.risk.engage_killswitch(
-                            f"{self.settings.PERIOD} GTD 部分成交后剩余挂单取消失败，请人工核对"
+                            f"{self.settings.PERIOD} 限价单部分成交后剩余挂单取消失败，请人工核对"
                         )
                     filled = min(state.filled, order.shares)
                     price = state.avg_price or order.price
@@ -803,7 +823,8 @@ class Runtime:
                         fee=taker_fee(filled, price, rate), fee_rate=rate,
                         order_id=order.order_id,
                         partial=filled < order.shares - 1e-9,
-                        extra={"source": "gtd", "maker": order.maker},
+                        extra={"source": "limit" if use_limit else "gtd",
+                               "maker": order.maker},
                     )
                 else:
                     cancelled = await self.broker.cancel(order)
@@ -812,22 +833,31 @@ class Runtime:
                         # double the position.
                         log.error("exec.gtd_cancel_failed_before_fallback",
                                   order_id=order.order_id[:16])
-                        self._record_signal(aw, decision="skip",
-                                            skip_reason="gtd_cancel_failed",
-                                            decision_obj=decision, confirm_price=current,
-                                            extra={"gtd_price": order.price, **entry_info})
+                        self._record_signal(
+                            aw, decision="skip",
+                            skip_reason=("limit_cancel_failed" if use_limit
+                                         else "gtd_cancel_failed"),
+                            decision_obj=decision, confirm_price=current,
+                            extra={"gtd_price": order.price, **entry_info},
+                        )
                         aw.signal_recorded = True
-                        self.risk.set_pause(60, "gtd_cancel_failed")
+                        self.risk.set_pause(60, "limit_cancel_failed"
+                                            if use_limit else "gtd_cancel_failed")
                         return
                     remaining = aw.end_ts - self._now()
-                    if settings.ENTRY_FALLBACK_FAK and remaining > 3.0:
+                    if (not use_limit and settings.ENTRY_FALLBACK_FAK
+                            and remaining > 3.0):
                         entry_info["fallback"] = "fak"
                         fill = await self._entry_fak(market, decision, fresh, limit, notional)
                     else:
-                        self._record_signal(aw, decision="skip", skip_reason="gtd_unfilled",
-                                            decision_obj=decision, confirm_price=current,
-                                            extra={"limit": limit, "ask": ask,
-                                                   "gtd_price": order.price})
+                        self._record_signal(
+                            aw, decision="skip",
+                            skip_reason=("limit_unfilled" if use_limit
+                                         else "gtd_unfilled"),
+                            decision_obj=decision, confirm_price=current,
+                            extra={"limit": limit, "ask": ask,
+                                   "gtd_price": order.price},
+                        )
                         log.info("exec.gtd_unfilled", slot=aw.slot,
                                  price=order.price, shares=shares,
                                  remaining=round(remaining, 1))
