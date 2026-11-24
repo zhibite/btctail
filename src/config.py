@@ -244,8 +244,14 @@ class Settings(BaseSettings):
     DISPLAY_POLL_INTERVAL_MS: int = 5000
 
     # ── Risk guards ───────────────────────────────────────────────────────
-    DAILY_LOSS_LIMIT_USD: float = 50.0     # 0 disables
-    MAX_CONSEC_LOSSES: int = 3             # 0 disables
+    DAILY_LOSS_LIMIT_USD: float = 50.0     # 0 disables (per strategy)
+    MAX_CONSEC_LOSSES: int = 3             # 0 disables (per strategy)
+    # Portfolio-wide guards: the per-strategy limits above cannot see a
+    # correlated event where several assets each lose one trade in the same
+    # window. Count live positions (window not yet ended) across every
+    # strategy in the same mode, and sum the day's realized PnL across them.
+    PORTFOLIO_MAX_POSITIONS: int = 5
+    PORTFOLIO_DAILY_LOSS_LIMIT_USD: float = 50.0   # 0 disables
     PAUSE_MINUTES_AFTER_STREAK: int = 60
     MIN_WALLET_BALANCE_USD: float = 15.0
     RISK_RESERVE_USD: float = 2.0
@@ -489,7 +495,8 @@ class Settings(BaseSettings):
         for name in ("ENTRY_WINDOW_SEC", "ENTRY_THRESHOLD", "CONFIRM_SEC",
                      "MAX_ENTRY_PRICE", "MIN_ENTRY_PRICE", "STAKE_USD",
                      "ENTRY_NOTIONAL_USD_PAPER", "ENTRY_NOTIONAL_USD_LIVE",
-                     "ENTRY_NOTIONAL_USD", "EXEC_SLIPPAGE", "TAKER_FEE_RATE"):
+                     "ENTRY_NOTIONAL_USD", "EXEC_SLIPPAGE", "TAKER_FEE_RATE",
+                     "PORTFOLIO_DAILY_LOSS_LIMIT_USD"):
             try:
                 if not math.isfinite(float(getattr(self, name))):
                     errors.append(f"{name} 必须是有限数字")
@@ -547,6 +554,10 @@ class Settings(BaseSettings):
             errors.append("GTD_FILL_TIMEOUT_S 必须 > 0")
         if self.MAKER_FEE_RATE < 0 or self.MAKER_FEE_RATE > 0.5:
             errors.append("MAKER_FEE_RATE 必须在 [0, 0.5] 内")
+        if self.PORTFOLIO_MAX_POSITIONS < 0:
+            errors.append("PORTFOLIO_MAX_POSITIONS 不能为负")
+        if self.PORTFOLIO_DAILY_LOSS_LIMIT_USD < 0:
+            errors.append("PORTFOLIO_DAILY_LOSS_LIMIT_USD 不能为负")
         return errors
 
 
@@ -613,8 +624,14 @@ TUNABLE_SPECS: dict[str, dict] = {
                        "label": "官方费率",
                        "help": "fee = 份额 × 费率 × p × (1-p)。Crypto 类目默认 0.07。"},
     "DAILY_LOSS_LIMIT_USD": {"group": "risk", "type": "float", "min": 0, "max": 10000, "step": 5,
-                             "label": "单日亏损上限(USDC)",
-                             "help": "当日已实现亏损达到该值即停止当日交易。0=关闭。"},
+                             "label": "单策略单日亏损上限(USDC)",
+                             "help": "单个策略当日已实现亏损达到该值即停止该策略当日交易。0=关闭。"},
+    "PORTFOLIO_MAX_POSITIONS": {"group": "risk", "type": "int", "min": 0, "max": 50, "step": 1,
+                                "label": "全局最大并发持仓",
+                                "help": "所有策略合计、窗口尚未结束的持仓达到该值后，新入场全部跳过。0=关闭。"},
+    "PORTFOLIO_DAILY_LOSS_LIMIT_USD": {"group": "risk", "type": "float", "min": 0, "max": 10000, "step": 5,
+                                       "label": "全局单日亏损上限(USDC)",
+                                       "help": "所有策略合计当日已实现亏损达到该值后，当天停止开仓。0=关闭。"},
     "MAX_CONSEC_LOSSES": {"group": "risk", "type": "int", "min": 0, "max": 20, "step": 1,
                           "label": "最大连亏次数",
                           "help": "连续亏损达到该值后暂停。0=关闭。"},

@@ -18,12 +18,13 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from src.config import Settings, strategy_key
 from src.execution.broker import Broker, EntryFill, LimitFill, LimitOrder, resolve_fee_rate
 from src.execution.clob_client import round_down
-from src.infra.clock import fmt_duration, slot_start, utc_iso
+from src.infra.clock import fmt_duration, slot_start, utc_day, utc_iso
 from src.infra.logging import get_logger, set_event_hook
 from src.market.market_service import MarketService, Quote
 from src.market.market_ws import MarketWS
@@ -523,6 +524,38 @@ class Runtime:
                                           quote.up_mid, quote.down_mid)
         self._update_mid_crossings(aw, quote, aw.quote_ts)
 
+    def _portfolio_check(self, mode: str, now: float) -> tuple[str, int, float]:
+        """Portfolio-wide guards shared by every strategy in this mode.
+
+        Counts only positions whose window has not ended yet: a resolved but
+        not-yet-settled trade is no longer live exposure. The daily PnL is
+        summed across every asset/period for the current UTC day.
+        """
+        settings = self.settings
+        if settings.PORTFOLIO_DAILY_LOSS_LIMIT_USD <= 0 \
+                and settings.PORTFOLIO_MAX_POSITIONS <= 0:
+            return "", 0, 0.0
+        day = utc_day(now)
+        start = datetime.strptime(day, "%Y-%m-%d").replace(
+            tzinfo=timezone.utc).timestamp()
+        trades = self.db.trades_between(start, start + 86400, mode=mode)
+        realized = sum(
+            float(t.get("pnl") or 0) for t in trades
+            if t.get("status") in ("won", "lost", "void")
+        )
+        live_positions = 0
+        for trade in self.db.open_trades(mode=mode):
+            span = 300 if trade.get("period") == "5m" else 900
+            if int(trade.get("slot") or 0) + span > now:
+                live_positions += 1
+        if settings.PORTFOLIO_DAILY_LOSS_LIMIT_USD > 0 \
+                and realized <= -float(settings.PORTFOLIO_DAILY_LOSS_LIMIT_USD):
+            return "portfolio_daily_loss_limit", live_positions, realized
+        if settings.PORTFOLIO_MAX_POSITIONS > 0 \
+                and live_positions >= settings.PORTFOLIO_MAX_POSITIONS:
+            return "portfolio_max_positions", live_positions, realized
+        return "", live_positions, realized
+
     def _update_mid_crossings(self, aw: ActiveWindow, quote: Quote,
                               ts: float) -> None:
         """Sample the UP mid at most once per bucket and count 0.5 flips.
@@ -562,6 +595,25 @@ class Runtime:
 
         if self.db.trade_exists(aw.slot, mode, self.settings.PERIOD, self.asset):
             aw.signal_recorded = True
+            return
+
+        portfolio_reason, open_positions, daily_pnl = self._portfolio_check(mode, now)
+        if portfolio_reason:
+            self._record_signal(
+                aw, decision="skip", skip_reason=portfolio_reason,
+                decision_obj=decision, confirm_price=decision.price,
+            )
+            if aw.strategy is not None:
+                aw.strategy.state.phase = Phase.SKIPPED
+                aw.strategy.state.skip_reason = portfolio_reason
+            log.warning(
+                "exec.blocked_by_portfolio", slot=aw.slot,
+                side=decision.side.value, reason=portfolio_reason,
+                open_positions=open_positions,
+                daily_pnl=round(daily_pnl, 2),
+                max_positions=settings.PORTFOLIO_MAX_POSITIONS,
+                daily_loss_limit=settings.PORTFOLIO_DAILY_LOSS_LIMIT_USD,
+            )
             return
 
         # The confirmed favorite is only a favourite if the market has not

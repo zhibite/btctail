@@ -499,3 +499,47 @@ async def test_pre_entry_poll_interval_uses_sample_sec(tmp_path):
     assert runtime._pre_entry_poll_interval() == 5.0
     settings.MID_CROSS_SAMPLE_SEC = 1
     assert runtime._pre_entry_poll_interval() == 1.0
+
+
+async def test_portfolio_max_positions_blocks_entry(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    runtime, db, aw, svc, pm = build(tmp_path, [])
+    for asset in ("ETH", "SOL", "XRP", "DOGE", "BNB"):
+        db.create_trade(
+            slot=SLOT, period="15m", mode="paper", side="UP",
+            token_id="", condition_id="", signal_price=0.9, entry_price=0.9,
+            shares=10.0, cost=9.0, fee=0.0, fee_rate=0.0, stake=10.0,
+            order_id="other", asset=asset, status="open", entry_ts=END - 100,
+        )
+    decision = EntryDecision(
+        side=Side.UP, price=0.91, trigger_price=0.86,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    assert db.trade_exists(SLOT, "paper", "15m", "BTC") is False
+    assert db.recent_signals()[0]["skip_reason"] == "portfolio_max_positions"
+    assert aw.strategy.state.phase.value == "SKIPPED"
+
+
+async def test_portfolio_daily_loss_blocks_entry(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    runtime, db, aw, svc, pm = build(tmp_path, [])
+    for i, asset in enumerate(("ETH", "SOL", "XRP", "DOGE", "BNB")):
+        trade_id = db.create_trade(
+            slot=SLOT - 900 * (i + 1), period="15m", mode="paper", side="UP",
+            token_id="", condition_id="", signal_price=0.9, entry_price=0.9,
+            shares=10.0, cost=10.0, fee=0.0, fee_rate=0.0, stake=10.0,
+            order_id="other", asset=asset, status="open", entry_ts=END - 100,
+        )
+        db.settle_trade(trade_id, resolved_side="DOWN", pnl=-10.0,
+                        payout=0.0, status="lost")
+    decision = EntryDecision(
+        side=Side.UP, price=0.91, trigger_price=0.86,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    assert db.trade_exists(SLOT, "paper", "15m", "BTC") is False
+    assert db.recent_signals()[0]["skip_reason"] == "portfolio_daily_loss_limit"
+    assert aw.strategy.state.phase.value == "SKIPPED"

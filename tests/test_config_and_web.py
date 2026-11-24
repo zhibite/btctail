@@ -429,3 +429,13 @@ def test_empty_password_closes_dashboard(tmp_path):
         assert client.get("/api/status").status_code == 401
         assert client.get("/api/health").status_code == 200
     state.db.close()
+
+
+def test_portfolio_risk_defaults_and_validation():
+    settings = Settings()
+    assert (settings.PORTFOLIO_MAX_POSITIONS,
+            settings.PORTFOLIO_DAILY_LOSS_LIMIT_USD) == (5, 50.0)
+    errors = Settings(PORTFOLIO_MAX_POSITIONS=-1,
+                      PORTFOLIO_DAILY_LOSS_LIMIT_USD=-1).validation_errors()
+    assert any("PORTFOLIO_MAX_POSITIONS" in message for message in errors)
+    assert any("PORTFOLIO_DAILY_LOSS_LIMIT_USD" in message for message in errors)
