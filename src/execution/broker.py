@@ -212,6 +212,8 @@ class LiveBroker(Broker):
     def __init__(self, settings: Settings, clob: ClobClient) -> None:
         self._settings = settings
         self._clob = clob
+        # order_id -> actual (shares, avg_price) from the CLOB trade history.
+        self._fill_cache: dict[str, tuple[float, float]] = {}
 
     async def balance(self) -> Optional[float]:
         return await self._clob.get_balance()
@@ -247,12 +249,24 @@ class LiveBroker(Broker):
             matched = 0.0
         status = str(state.get("status") or "").lower()
         done = status in ("matched", "filled", "canceled", "cancelled", "expired")             or matched >= order.shares - 1e-9
-        # Maker fills execute at the limit or better; the limit is the
-        # conservative (higher) cost.
+        filled = min(matched, order.shares)
+        price = order.price if filled > 0 else 0.0
+        if filled > 0 and (done or filled >= order.shares - 1e-9):
+            # A crossing limit fills at the makers' prices, often below our
+            # limit. The order record only has size_matched, so read the
+            # actual average from the trade history once the order is done.
+            actual = self._fill_cache.get(order.order_id)
+            if actual is None:
+                actual = await self._clob.get_order_fills(
+                    order.order_id, order.token_id
+                )
+                if actual is not None:
+                    self._fill_cache[order.order_id] = actual
+            if actual is not None:
+                filled = min(actual[0], order.shares)
+                price = actual[1]
         return LimitFill(
-            filled=min(matched, order.shares),
-            avg_price=order.price if matched > 0 else 0.0,
-            done=done, raw=state,
+            filled=filled, avg_price=price, done=done, raw=state,
         )
 
     async def cancel(self, order: LimitOrder) -> bool:

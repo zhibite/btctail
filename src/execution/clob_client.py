@@ -461,6 +461,48 @@ class ClobClient:
         except Exception:  # noqa: BLE001
             return None
 
+    async def get_order_fills(
+        self, order_id: str, token_id: str
+    ) -> Optional[tuple[float, float]]:
+        """Actual (shares, avg_price) for a just-filled taker order.
+
+        A crossing limit order executes at the makers' prices, which can be
+        well below our limit; neither the POST response nor ``get_order``
+        exposes the average price. The trade history does: each fill carries
+        our ``taker_order_id``. Maker fills are not handled here and fall
+        back to the resting price.
+        """
+        if self._client is None or not order_id or not token_id:
+            return None
+        try:
+            from py_clob_client_v2 import TradeParams
+
+            trades = await self._run(
+                self._client.get_trades,
+                TradeParams(asset_id=token_id),
+                only_first_page=True,
+                timeout=10.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("clob.get_order_fills_failed", order_id=order_id[:16],
+                      error=str(exc))
+            return None
+        shares = 0.0
+        cost = 0.0
+        for trade in trades or []:
+            if not isinstance(trade, dict):
+                continue
+            if str(trade.get("taker_order_id") or "") != order_id:
+                continue
+            size = _float(trade.get("size"))
+            price = _float(trade.get("price"))
+            if size and price and size > 0 and 0 < price < 1:
+                shares += size
+                cost += size * price
+        if shares <= 0 or cost <= 0:
+            return None
+        return shares, cost / shares
+
 
 def _normalize_units(shares: float, cost: float) -> tuple[float, float]:
     """Return (shares, cost) in human units.

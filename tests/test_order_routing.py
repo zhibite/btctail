@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from src.config import Settings
-from src.execution.broker import LiveBroker
+from src.execution.broker import LimitOrder, LiveBroker
 from src.execution.clob_client import ClobClient, FillResult, OrderAck
 from src.market.models import MarketInfo, Side
 
@@ -13,6 +13,16 @@ class FakeClob:
     def __init__(self) -> None:
         self.limit_calls: list[dict] = []
         self.market_calls: list[dict] = []
+        self.order_state: dict = {}
+        self.fills: tuple[float, float] | None = None
+        self.fill_calls = 0
+
+    async def get_order(self, order_id):
+        return self.order_state
+
+    async def get_order_fills(self, order_id, token_id):
+        self.fill_calls += 1
+        return self.fills
 
     async def place_limit_buy(self, token_id, shares, price, tick_size, **kwargs):
         self.limit_calls.append(dict(
@@ -134,3 +144,61 @@ async def test_clob_market_order_signs_v2_market_with_position_id():
     args, _ = fake.market_orders[0]
     assert args.position_id == "position-up"
     assert args.token_id is None
+
+
+async def test_limit_fill_uses_the_actual_average_price(tmp_path):
+    broker = live_broker(tmp_path)
+    broker._clob.order_state = {"status": "matched", "size_matched": "5.23"}
+    broker._clob.fills = (5.23, 0.901)
+    order = LimitOrder(order_id="0x1", token_id="token-up", side=Side.UP,
+                       price=0.95, shares=5.23)
+
+    fill = await broker.limit_fill(order)
+
+    assert fill.filled == pytest.approx(5.23)
+    assert fill.avg_price == pytest.approx(0.901)
+    assert broker._clob.fill_calls == 1
+
+
+async def test_limit_fill_falls_back_to_the_limit_price(tmp_path):
+    broker = live_broker(tmp_path)
+    broker._clob.order_state = {"status": "matched", "size_matched": "5.23"}
+    broker._clob.fills = None
+    order = LimitOrder(order_id="0x2", token_id="token-up", side=Side.UP,
+                       price=0.95, shares=5.23)
+
+    fill = await broker.limit_fill(order)
+
+    assert fill.avg_price == pytest.approx(0.95)
+
+
+class FakeTradesSdk:
+    def __init__(self, trades):
+        self.trades = trades
+
+    def get_trades(self, params, only_first_page=False):
+        return self.trades
+
+
+async def test_clob_order_fills_sums_only_our_taker_order():
+    client = ClobClient(host="http://clob.invalid")
+    client._client = FakeTradesSdk([
+        {"taker_order_id": "0xabc", "size": "5.23", "price": "0.9"},
+        {"taker_order_id": "0xabc", "size": "1.0", "price": "0.91"},
+        {"taker_order_id": "0xother", "size": "9.0", "price": "0.5"},
+    ])
+
+    fills = await client.get_order_fills("0xabc", "token-up")
+
+    assert fills is not None
+    shares, avg = fills
+    assert shares == pytest.approx(6.23)
+    assert avg == pytest.approx((5.23 * 0.9 + 0.91) / 6.23)
+
+
+async def test_clob_order_fills_none_without_a_match():
+    client = ClobClient(host="http://clob.invalid")
+    client._client = FakeTradesSdk([
+        {"taker_order_id": "0xother", "size": "1", "price": "0.5"},
+    ])
+    assert await client.get_order_fills("0xabc", "token-up") is None
