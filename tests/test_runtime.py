@@ -10,7 +10,7 @@ from src.execution.broker import Broker, EntryFill, LimitFill, LimitOrder
 from src.market.market_service import Quote
 from src.market.models import MarketInfo, Side
 from src.persistence.db import DB
-from src.runtime import ActiveWindow, Runtime
+from src.runtime import ActiveWindow, Runtime, discovery_jitter
 from src.strategy.late_favorite import LateFavoriteStrategy
 
 # Must be aligned to the 900 s boundary that the runtime uses.
@@ -547,3 +547,14 @@ async def test_portfolio_daily_loss_blocks_entry(tmp_path):
     assert db.trade_exists(SLOT, "paper", "15m", "BTC") is False
     assert db.recent_signals()[0]["skip_reason"] == "portfolio_daily_loss_limit"
     assert aw.strategy.state.phase.value == "SKIPPED"
+
+
+def test_discovery_jitter_is_stable_and_bounded():
+    keys = [f"{asset}:{period}" for asset in
+            ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE")
+            for period in ("5m", "15m")]
+    values = [discovery_jitter(key) for key in keys]
+
+    assert all(0.0 <= value < 0.8 for value in values)
+    assert discovery_jitter("BTC:15m") == discovery_jitter("BTC:15m")
+    assert len(set(values)) > 1

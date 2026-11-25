@@ -21,6 +21,11 @@ class _FailingClient:
         self.is_closed = True
 
 
+class _PoolFailingClient(_FailingClient):
+    async def get(self, *args, **kwargs):
+        raise httpx.PoolTimeout("all connections busy")
+
+
 async def test_http_client_reset_after_repeated_transport_failures():
     client = PolymarketClient()
     fake = _FailingClient()
@@ -33,6 +38,45 @@ async def test_http_client_reset_after_repeated_transport_failures():
     assert fake.closed
     assert client._http is None
     assert client._failures == 0
+
+
+async def test_pool_timeouts_do_not_trigger_a_client_reset():
+    client = PolymarketClient()
+    fake = _PoolFailingClient()
+    client._http = fake
+
+    for _ in range(4):
+        with pytest.raises(RuntimeError):
+            await client._get("https://example.invalid", retries=0)
+
+    # Pool queueing is load, not a wedged socket: keep the pool and do not
+    # count it towards the reset threshold.
+    assert not fake.closed
+    assert client._http is fake
+    assert client._failures == 0
+
+
+async def test_reset_is_a_noop_when_the_client_is_already_gone():
+    client = PolymarketClient()
+    await client.reset_http()
+    await client.reset_http()
+    assert client._http is None
+
+
+async def test_stale_reset_generation_leaves_the_new_pool_alone():
+    client = PolymarketClient()
+    old = _FailingClient()
+    client._http = old
+    await client.reset_http()
+    assert old.closed
+    assert client._http is None
+
+    new = _FailingClient()
+    client._http = new
+    client._http_gen = 1
+    await client.reset_http(generation=0)  # a request that used the old pool
+    assert not new.closed
+    assert client._http is new
 
 
 def test_parse_market_legacy_keeps_token_ids_and_real_tick():

@@ -34,6 +34,22 @@ def _as_bool(value: object) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "resolved")
 
 
+def _is_wedge_failure(exc: Exception | None) -> bool:
+    """True for transport faults that rebuilding the pool can actually fix.
+
+    ``PoolTimeout`` is deliberately excluded: it means the existing
+    connections were all busy -- all fourteen strategies wake together at a
+    window boundary -- not that a socket is wedged. Rebuilding the pool under
+    that load closes connections other requests are still using and makes
+    the stall worse.
+    """
+    if exc is None or isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if isinstance(exc, httpx.PoolTimeout):
+        return False
+    return isinstance(exc, (httpx.TransportError, httpx.TimeoutException))
+
+
 def _load_json_list(raw: Any) -> list:
     if isinstance(raw, list):
         return raw
@@ -81,6 +97,10 @@ class PolymarketClient:
         self.gamma_api = gamma_api.rstrip("/")
         self.clob_host = clob_host.rstrip("/")
         self._http: Optional[httpx.AsyncClient] = None
+        # Incremented whenever a client is built. A reset request from a
+        # request that started against an older client must not tear down
+        # the replacement.
+        self._http_gen = 0
         self._failures = 0
         self._reset_lock = asyncio.Lock()
         self._resolution_cache: dict[str, tuple[float, dict]] = {}
@@ -90,12 +110,17 @@ class PolymarketClient:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(
                 timeout=httpx.Timeout(10.0, connect=5.0),
-                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+                # Fourteen strategies share this pool and all wake on the
+                # same window boundaries; a wider pool keeps the discovery +
+                # quote burst from queueing past the 2 s request timeout.
+                limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
                 headers={"User-Agent": "polytail-btc15/0.1"},
             )
+            self._http_gen += 1
         return self._http
 
-    async def reset_http(self) -> None:
+    async def reset_http(self, generation: int | None = None,
+                         reason: str = "") -> None:
         """Drop the shared client after repeated failures.
 
         A single ``httpx.AsyncClient`` is reused by both strategies. If its
@@ -103,17 +128,27 @@ class PolymarketClient:
         every later request hangs and the bot silently stops discovering
         markets. Rebuilding the client is the only reliable recovery short
         of a process restart.
+
+        ``generation`` is the pool generation the failing request used; when
+        several concurrent requests trip the failure counter, only the first
+        one actually rebuilds (and logs). ``reason`` is recorded so a future
+        investigation can tell transport faults from discovery resets.
         """
         async with self._reset_lock:
+            if generation is not None and generation != self._http_gen:
+                # Another caller already replaced this pool; this failure
+                # belongs to the same episode, not to the new client.
+                return
             client = self._http
+            if client is None or client.is_closed:
+                return
             self._http = None
             self._failures = 0
-            if client is not None and not client.is_closed:
-                try:
-                    await client.aclose()
-                except Exception:  # noqa: BLE001 - close must never raise
-                    pass
-            log.warning("market.http_client_reset")
+            try:
+                await client.aclose()
+            except Exception:  # noqa: BLE001 - close must never raise
+                pass
+        log.warning("market.http_client_reset", reason=reason or "manual")
 
     async def close(self) -> None:
         if self._http is not None and not self._http.is_closed:
@@ -122,6 +157,7 @@ class PolymarketClient:
     async def _get(self, url: str, params: dict | None = None, timeout: float = 8.0,
                    retries: int = 2) -> Any:
         client = await self._client()
+        generation = self._http_gen
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
             try:
@@ -140,13 +176,14 @@ class PolymarketClient:
                 if attempt < retries:
                     # Keep this short: discovery runs inside the trading loop.
                     await asyncio.sleep(0.15 * (attempt + 1))
-        if not isinstance(last_exc, httpx.HTTPStatusError):
-            # Timeouts/transport errors are the signature of a wedged pool;
+        if _is_wedge_failure(last_exc):
+            # Actual transport faults are the signature of a wedged pool;
             # three in a row means a restart of the client is cheaper than
-            # letting every strategy stay blind.
+            # letting every strategy stay blind. Pool queueing is excluded
+            # (see _is_wedge_failure), so a busy boundary cannot trigger it.
             self._failures += 1
             if self._failures >= 3:
-                await self.reset_http()
+                await self.reset_http(generation, reason=type(last_exc).__name__)
         raise RuntimeError(f"GET {url} failed: {last_exc}") from last_exc
 
     # ── Discovery ─────────────────────────────────────────────────────────

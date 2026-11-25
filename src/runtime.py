@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -53,6 +54,17 @@ EXEC_REVERSAL_TOLERANCE = 0.02
 # At execution time a top-of-book quote older than this is not trusted; the
 # order is too sensitive to a stale last-second price.
 EXEC_QUOTE_WS_MAX_AGE = 1.0
+
+
+def discovery_jitter(key: str) -> float:
+    """Deterministic 0-800 ms offset for the first discovery of a window.
+
+    All fourteen runtimes wake on the same 5m/15m boundary; without a spread
+    they hit Gamma and the CLOB tick-size endpoint in the same instant and
+    the shared HTTP pool queues past its request timeout. The offset is
+    stable per strategy, so the retries that follow stay staggered too.
+    """
+    return (zlib.crc32(key.encode("utf-8")) % 800) / 1000.0
 
 
 @dataclass
@@ -366,7 +378,9 @@ class Runtime:
         )
         # Kicked off in the background so a slow Gamma call cannot delay the
         # first price tick (or a boot that lands inside the entry window).
-        aw.discovery_task = self._spawn(self._discover(aw, now), f"discover-{slot}")
+        aw.discovery_task = self._spawn(
+            self._discover_with_jitter(aw, now), f"discover-{slot}"
+        )
 
     def _finalize_window(self, aw: ActiveWindow) -> None:
         """Flush remaining samples and record a no-trade signal if needed."""
@@ -388,6 +402,12 @@ class Runtime:
                  phase=state.phase.value if state else "n/a",
                  skip_reason=state.skip_reason if state else "",
                  entered=aw.entered, samples=samples)
+
+    async def _discover_with_jitter(self, aw: ActiveWindow, now: float) -> None:
+        delay = discovery_jitter(self.key)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await self._discover(aw, now)
 
     async def _discover(self, aw: ActiveWindow, now: float) -> None:
         try:
@@ -415,7 +435,7 @@ class Runtime:
             # inside the HTTP client even when Gamma itself is wedged, so
             # also rebuild the client after a long run of discovery misses.
             if aw.discovery_failures % 20 == 0:
-                await self.pm.reset_http()
+                await self.pm.reset_http(reason="discovery_failures")
             return
         if self.active is not aw:
             # The window rolled over while Gamma was answering. Applying this
