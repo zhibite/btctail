@@ -28,6 +28,7 @@ from src.infra.logging import get_logger
 from src.research.dataset import horizon_seconds, list_days, load_series
 from src.strategy.late_favorite import (
     StrategyParams,
+    count_mid_crossings,
     evaluate_window_array,
     taker_fee,
 )
@@ -49,6 +50,14 @@ class BacktestParams:
     slippage: float = 0.005
     fee_rate: float = 0.01
     fee_model: str = "official"     # official | none
+    # Crossing filter: count from the window open to the entry tick and skip
+    # when the count exceeds the limit (0 disables it). `full_window` keeps
+    # the whole series available so the count is meaningful.
+    max_mid_crossings: int = 0
+    mid_cross_band: float = 0.02
+    mid_cross_level: float = 0.5
+    mid_cross_sample_sec: float = 1.0
+    full_window: bool = False
 
     def strategy_params(self) -> StrategyParams:
         return StrategyParams(
@@ -70,6 +79,11 @@ class BacktestParams:
             "slippage": self.slippage,
             "fee_rate": self.fee_rate,
             "fee_model": self.fee_model,
+            "max_mid_crossings": self.max_mid_crossings,
+            "mid_cross_band": self.mid_cross_band,
+            "mid_cross_level": self.mid_cross_level,
+            "mid_cross_sample_sec": self.mid_cross_sample_sec,
+            "full_window": self.full_window,
         }
 
     @staticmethod
@@ -131,11 +145,12 @@ def run_backtest(
     trades: list[dict] = []
     skips: dict[str, int] = {}
     markets_seen = 0
-    markets = load_series(
-        root, asset, period, start, end,
-        horizon_seconds(params.entry_window_sec, params.confirm_sec),
-        is_live=is_live,
-    )
+    horizon = horizon_seconds(params.entry_window_sec, params.confirm_sec)
+    if params.full_window or params.max_mid_crossings > 0:
+        # The crossing filter counts from the window open; the usual horizon
+        # only covers the entry window and would undercount.
+        horizon = max(horizon, 300 if period == "5m" else 900)
+    markets = load_series(root, asset, period, start, end, horizon, is_live=is_live)
 
     for market in markets:
         if should_cancel is not None and should_cancel():
@@ -159,6 +174,20 @@ def run_backtest(
         if not signal.ok:
             skips[signal.reason] = skips.get(signal.reason, 0) + 1
             continue
+
+        crossings = None
+        if params.full_window or params.max_mid_crossings > 0:
+            window_start = float(market.end_ts) - (300 if period == "5m" else 900)
+            crossings = count_mid_crossings(
+                market.times, market.up, window_start,
+                float(signal.entry_ts), params.mid_cross_band,
+                params.mid_cross_sample_sec, params.mid_cross_level,
+            )
+            if params.max_mid_crossings > 0 and crossings > params.max_mid_crossings:
+                skips["too_many_mid_crossings"] = (
+                    skips.get("too_many_mid_crossings", 0) + 1
+                )
+                continue
 
         entry_fill = signal.entry_price + params.slippage
         if not math.isfinite(entry_fill) or entry_fill <= 0 or entry_fill >= 1:
@@ -189,6 +218,7 @@ def run_backtest(
             "confirm_delay_sec": signal.confirm_delay_sec,
             "confirm_price_delta": signal.confirm_price_delta,
             "time_remaining_sec": signal.time_remaining_sec,
+            "mid_crossings": crossings,
             "resolved": market.resolved,
             "payout": payout,
             "shares": shares,

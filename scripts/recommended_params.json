@@ -1,0 +1,95 @@
+{
+  "BTC:15m": {
+    "entry_window_sec": 60,
+    "threshold": 0.94,
+    "confirm_sec": 15,
+    "max_entry_price": 0.96
+  },
+  "BTC:5m": {
+    "entry_window_sec": 10,
+    "threshold": 0.88,
+    "confirm_sec": 0,
+    "max_entry_price": 0.9
+  },
+  "ETH:15m": {
+    "entry_window_sec": 45,
+    "threshold": 0.84,
+    "confirm_sec": 10,
+    "max_entry_price": 0.92
+  },
+  "ETH:5m": {
+    "entry_window_sec": 15,
+    "threshold": 0.9,
+    "confirm_sec": 0,
+    "max_entry_price": 0.93
+  },
+  "SOL:15m": {
+    "entry_window_sec": 45,
+    "threshold": 0.84,
+    "confirm_sec": 0,
+    "max_entry_price": 0.93,
+    "max_mid_crossings": 0,
+    "mid_cross_band": 0.02,
+    "mid_cross_sample_sec": 5
+  },
+  "SOL:5m": {
+    "entry_window_sec": 20,
+    "threshold": 0.84,
+    "confirm_sec": 0,
+    "max_entry_price": 0.95,
+    "max_mid_crossings": 0,
+    "mid_cross_band": 0.02,
+    "mid_cross_sample_sec": 1
+  },
+  "XRP:15m": {
+    "entry_window_sec": 60,
+    "threshold": 0.9,
+    "confirm_sec": 10,
+    "max_entry_price": 0.94
+  },
+  "XRP:5m": {
+    "entry_window_sec": 20,
+    "threshold": 0.9,
+    "confirm_sec": 0,
+    "max_entry_price": 0.92
+  },
+  "DOGE:15m": {
+    "entry_window_sec": 60,
+    "threshold": 0.86,
+    "confirm_sec": 10,
+    "max_entry_price": 0.95
+  },
+  "DOGE:5m": {
+    "entry_window_sec": 25,
+    "threshold": 0.84,
+    "confirm_sec": 2,
+    "max_entry_price": 0.98,
+    "max_mid_crossings": 0,
+    "mid_cross_band": 0.02,
+    "mid_cross_sample_sec": 1
+  },
+  "BNB:15m": {
+    "entry_window_sec": 60,
+    "threshold": 0.84,
+    "confirm_sec": 0,
+    "max_entry_price": 0.96
+  },
+  "BNB:5m": {
+    "entry_window_sec": 10,
+    "threshold": 0.84,
+    "confirm_sec": 1,
+    "max_entry_price": 0.95
+  },
+  "HYPE:15m": {
+    "entry_window_sec": 105,
+    "threshold": 0.88,
+    "confirm_sec": 10,
+    "max_entry_price": 0.97
+  },
+  "HYPE:5m": {
+    "entry_window_sec": 15,
+    "threshold": 0.9,
+    "confirm_sec": 0,
+    "max_entry_price": 0.93
+  }
+}

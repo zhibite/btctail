@@ -30,7 +30,7 @@ charged on entry; the resolution payout at p = 1 / 0 has no fee.
 """
 from __future__ import annotations
 
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Sequence
@@ -69,23 +69,53 @@ class StrategyParams:
 
 
 def update_mid_crossing(state: int, count: int, up: float,
-                        band: float) -> tuple[int, int]:
-    """Advance the ``UP mid crosses 0.5`` counter with a deadband.
+                        band: float, level: float = 0.5) -> tuple[int, int]:
+    """Advance the ``UP mid crosses `level` `` counter with a deadband.
 
-    ``state`` is +1 above ``0.5 + band``, -1 below ``0.5 - band`` and keeps
-    its previous value inside the band, so a 0.49 <-> 0.51 wiggle does not
-    count. A transition between the two states counts once; the first
-    excursion away from the neutral state does not.
+    ``state`` is +1 above ``level + band``, -1 below ``level - band`` and
+    keeps its previous value inside the band, so a 0.59 <-> 0.61 wiggle at a
+    0.60 level does not count. A transition between the two states counts
+    once; the first excursion away from the neutral state does not.
     """
-    if up > 0.5 + band:
+    if up > level + band:
         nxt = 1
-    elif up < 0.5 - band:
+    elif up < level - band:
         nxt = -1
     else:
         return state, count
     if state and nxt != state:
         count += 1
     return nxt, count
+
+
+def count_mid_crossings(times: Sequence[float], up: Sequence[float],
+                        start_ts: float, end_ts: float, band: float,
+                        sample_sec: float = 1.0, level: float = 0.5) -> int:
+    """Effective UP-mid crossings of 0.5 over ``[start_ts, end_ts]``.
+
+    Samples are taken on a ``sample_sec`` grid from the window open, matching
+    the live runtime's ``MID_CROSS_SAMPLE_SEC`` polling (1 s for 5m, 5 s for
+    15m). Each grid point uses the latest sample at or before it, so mixed
+    fine/main series are handled consistently.
+    """
+    step = max(0.05, float(sample_sec))
+    state = 0
+    count = 0
+    grid = float(start_ts)
+    while grid <= end_ts + 1e-9:
+        idx = bisect_right(times, grid) - 1
+        if idx >= 0 and times[idx] >= start_ts:
+            value = up[idx]
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                number = float("nan")
+            if number == number:  # NaN means "no observation"
+                state, count = update_mid_crossing(
+                    state, count, number, band, level
+                )
+        grid += step
+    return count
 
 
 class Phase(str, Enum):

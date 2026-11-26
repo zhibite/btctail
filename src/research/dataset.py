@@ -108,7 +108,19 @@ def load_day(day_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     markets_path = _find(day_dir, "markets")
     if markets_path is not None:
         markets = _read_csv(markets_path, MARKET_COLUMNS)
-        markets = markets.dropna(subset=["slug"]).drop_duplicates("slug", keep="last")
+        markets = markets.dropna(subset=["slug"])
+        if "resolved" in markets.columns:
+            # History merges can append a second, metadata-empty row for a
+            # slug. Keeping the plain "last" row silently drops every
+            # resolution; sort so a resolved row wins the dedupe.
+            markets["_resolved"] = (
+                markets["resolved"].fillna("").astype(str).str.strip().str.upper()
+            )
+            markets = markets.sort_values(["slug", "_resolved"], kind="mergesort")
+            markets = markets.drop_duplicates("slug", keep="last")
+            markets = markets.drop(columns=["_resolved"])
+        else:
+            markets = markets.drop_duplicates("slug", keep="last")
     else:
         markets = pd.DataFrame(columns=MARKET_COLUMNS)
     return klines, markets
