@@ -219,7 +219,9 @@ class Settings(BaseSettings):
 
     # ── Execution ─────────────────────────────────────────────────────────
     # The signal price is the CLOB midpoint (same series the backtest used).
-    # The FAK limit is signal_price + EXEC_SLIPPAGE, clamped to EXEC_LIMIT_MAX.
+    # The FAK limit is signal_price + EXEC_SLIPPAGE, clamped to EXEC_LIMIT_MAX
+    # and to this strategy's MAX_ENTRY_PRICE: the cap must bind the actual
+    # fill, not just the signal price, or a crossing FAK can fill above it.
     SIGNAL_PRICE_SOURCE: str = "mid"   # mid | last | ask
     EXEC_SLIPPAGE: float = 0.01
     EXEC_LIMIT_MAX: float = 0.99
@@ -366,8 +368,17 @@ class Settings(BaseSettings):
         return bool(self.API_KEY and self.API_SECRET and self.API_PASSPHRASE)
 
     def entry_limit_for(self, signal_price: float) -> float:
-        """Marketable limit for a taker BUY at `signal_price`."""
-        return min(self.EXEC_LIMIT_MAX, round(signal_price + self.EXEC_SLIPPAGE, 4))
+        """Marketable limit for a taker BUY at `signal_price`.
+
+        Capped by ``MAX_ENTRY_PRICE`` as well: the signal can sit just below
+        the cap while the ask has already moved above it, and a FAK must not
+        be allowed to fill above the strategy's stated maximum.
+        """
+        return min(
+            self.EXEC_LIMIT_MAX,
+            self.MAX_ENTRY_PRICE,
+            round(signal_price + self.EXEC_SLIPPAGE, 4),
+        )
 
     def entry_notional_for(self, mode: str | None = None) -> float:
         """USDC budget for one entry in the given execution mode."""

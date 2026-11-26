@@ -246,6 +246,33 @@ async def test_price_reversal_aborts_execution(tmp_path):
     assert db.recent_signals()[0]["skip_reason"] == "exec_price_reversed"
 
 
+async def test_execution_never_pays_above_the_price_cap(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    # Signal 0.935 is inside the 0.94 cap, but the ask has already moved to
+    # 0.945 (signal + slippage). The capped FAK limit is 0.94, so the order
+    # must not fill above the strategy's stated maximum: skip, don't pay up.
+    broker = FakeBroker()
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 28, 0.93, ask=0.945)], broker=broker,
+        settings=Settings(
+            DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path),
+            TRADING_MODE="paper", MAX_SPREAD_AT_ENTRY=0.10,
+            MIN_WALLET_BALANCE_USD=0, ENTRY_WINDOW_SEC=60,
+            ENTRY_THRESHOLD=0.90, CONFIRM_SEC=10, MAX_ENTRY_PRICE=0.94,
+            ENTRY_ORDER_TYPE="fak",
+        ),
+    )
+    decision = EntryDecision(
+        side=Side.UP, price=0.935, trigger_price=0.90,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    assert broker.calls == []
+    assert db.recent_trades() == []
+    assert db.recent_signals()[0]["skip_reason"] == "ask_above_limit"
+
+
 async def test_voided_market_settles_as_void(tmp_path):
     runtime, db, aw, svc, pm = build(
         tmp_path, [quote(END - 50, 0.92), quote(END - 40, 0.93), quote(END - 40, 0.93)],

@@ -439,3 +439,12 @@ def test_portfolio_risk_defaults_and_validation():
                       PORTFOLIO_DAILY_LOSS_LIMIT_USD=-1).validation_errors()
     assert any("PORTFOLIO_MAX_POSITIONS" in message for message in errors)
     assert any("PORTFOLIO_DAILY_LOSS_LIMIT_USD" in message for message in errors)
+
+
+def test_entry_limit_is_capped_by_the_strategy_max_price():
+    settings = Settings(EXEC_SLIPPAGE=0.03, EXEC_LIMIT_MAX=0.99,
+                        MAX_ENTRY_PRICE=0.96)
+    # Signal just below the cap: the old limit (signal + 3c) would be 0.985,
+    # which let a FAK fill above the stated 0.96 cap.
+    assert settings.entry_limit_for(0.955) == pytest.approx(0.96)
+    assert settings.entry_limit_for(0.90) == pytest.approx(0.93)

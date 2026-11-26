@@ -707,7 +707,13 @@ class Runtime:
             aw.signal_recorded = True
             return
 
-        limit = settings.entry_limit_for(decision.price)
+        # Hard-clamp the execution limit to the strategy cap. The signal can
+        # sit just below MAX_ENTRY_PRICE while the ask has already moved past
+        # it; without this, a crossing FAK could fill above the stated cap.
+        # With it, ask > cap means limit < ask and the order simply does not
+        # fill (ask_above_limit), which is the intended skip.
+        limit = min(settings.entry_limit_for(decision.price),
+                    settings.MAX_ENTRY_PRICE)
         # Paper and live have independent budgets (default 10 / 5 USDC).
         notional = round(float(settings.entry_notional_for(mode)), 2)
         # GTD/FAK orders at the CLOB are share-sized for limit orders; derive
