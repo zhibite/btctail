@@ -657,6 +657,30 @@ class Runtime:
             )
             return
 
+        # Paper and live have independent budgets (default 10 / 5 USDC).
+        notional = round(float(settings.entry_notional_for(mode)), 2)
+        # Balance and risk run *before* the final quote refresh: a balance
+        # query that has to hit the network must not age the execution quote
+        # and let the top of book move between the check and the order.
+        if self._last_balance is not None and now - self._last_balance_ts < 30:
+            balance = self._last_balance
+        else:
+            try:
+                balance = await asyncio.wait_for(self.broker.balance(), timeout=4.0)
+            except Exception:  # noqa: BLE001
+                balance = self._last_balance
+            self._last_balance = balance
+            self._last_balance_ts = self._now()
+        risk = self.risk.evaluate(now, notional, balance, mode)
+        if not risk.allowed:
+            self._record_signal(aw, decision="skip", skip_reason=f"risk:{risk.reason}",
+                                decision_obj=decision, confirm_price=decision.price,
+                                extra={"risk_detail": risk.detail})
+            log.warning("exec.blocked_by_risk", slot=aw.slot, reason=risk.reason,
+                        detail=risk.detail)
+            aw.signal_recorded = True
+            return
+
         # Re-read the book immediately before sending: the confirm tick can be
         # up to one poll interval old and the last seconds are volatile.
         try:
@@ -714,8 +738,6 @@ class Runtime:
         # fill (ask_above_limit), which is the intended skip.
         limit = min(settings.entry_limit_for(decision.price),
                     settings.MAX_ENTRY_PRICE)
-        # Paper and live have independent budgets (default 10 / 5 USDC).
-        notional = round(float(settings.entry_notional_for(mode)), 2)
         # GTD/FAK orders at the CLOB are share-sized for limit orders; derive
         # the share count from the USDC budget at the maximum price we would
         # pay, so a full fill never costs more than the configured notional.
@@ -726,27 +748,6 @@ class Runtime:
             aw.signal_recorded = True
             return
         ask = fresh.ask(decision.side)
-
-        # Prefer a recent cached balance: a slow balance call must not delay
-        # the order while the window is closing.
-        if self._last_balance is not None and now - self._last_balance_ts < 15:
-            balance = self._last_balance
-        else:
-            try:
-                balance = await asyncio.wait_for(self.broker.balance(), timeout=4.0)
-            except Exception:  # noqa: BLE001
-                balance = self._last_balance
-            self._last_balance = balance
-            self._last_balance_ts = self._now()
-        risk = self.risk.evaluate(now, notional, balance, mode)
-        if not risk.allowed:
-            self._record_signal(aw, decision="skip", skip_reason=f"risk:{risk.reason}",
-                                decision_obj=decision, confirm_price=current,
-                                extra={"risk_detail": risk.detail})
-            log.warning("exec.blocked_by_risk", slot=aw.slot, reason=risk.reason,
-                        detail=risk.detail)
-            aw.signal_recorded = True
-            return
 
         book = fresh.book(decision.side)
         depth = book.depth_at_or_below(limit) if book is not None else None
@@ -801,7 +802,13 @@ class Runtime:
                 entry_info["fallback"] = "place_failed"
                 if (not use_limit and settings.ENTRY_FALLBACK_FAK
                         and aw.end_ts - self._now() > 3.0):
-                    fill = await self._entry_fak(market, decision, fresh, limit, notional)
+                    fill, retries = await self._entry_fak_with_retry(
+                        aw, market, decision, fresh, limit, notional)
+                    fresh = aw.quote or fresh
+                    ask = fresh.ask(decision.side)
+                    book = fresh.book(decision.side)
+                    if retries:
+                        entry_info["fak_retries"] = retries
                 else:
                     self._record_signal(
                         aw, decision="skip",
@@ -874,7 +881,13 @@ class Runtime:
                     if (not use_limit and settings.ENTRY_FALLBACK_FAK
                             and remaining > 3.0):
                         entry_info["fallback"] = "fak"
-                        fill = await self._entry_fak(market, decision, fresh, limit, notional)
+                        fill, retries = await self._entry_fak_with_retry(
+                            aw, market, decision, fresh, limit, notional)
+                        fresh = aw.quote or fresh
+                        ask = fresh.ask(decision.side)
+                        book = fresh.book(decision.side)
+                        if retries:
+                            entry_info["fak_retries"] = retries
                     else:
                         self._record_signal(
                             aw, decision="skip",
@@ -890,7 +903,13 @@ class Runtime:
                         aw.signal_recorded = True
                         return
         else:
-            fill = await self._entry_fak(market, decision, fresh, limit, notional)
+            fill, retries = await self._entry_fak_with_retry(
+                aw, market, decision, fresh, limit, notional)
+            fresh = aw.quote or fresh
+            ask = fresh.ask(decision.side)
+            book = fresh.book(decision.side)
+            if retries:
+                entry_info["fak_retries"] = retries
 
         if fill is None:
             self._record_signal(aw, decision="skip", skip_reason="execution_missing",
@@ -1009,6 +1028,78 @@ class Runtime:
             market=market, side=decision.side, signal_price=decision.price,
             stake=round(float(notional), 2), limit_price=limit, quote=quote,
         )
+
+    async def _entry_fak_with_retry(
+        self, aw: ActiveWindow, market: MarketInfo, decision: EntryDecision,
+        quote: Quote, limit: float, notional: float,
+    ) -> tuple[EntryFill, int]:
+        """Send the FAK, retrying only a definitive exchange-side no-fill.
+
+        A ``no_match``/``no_fill`` FAK is killed and leaves nothing resting,
+        so a retry cannot double the position. Each retry re-reads the book
+        and reuses the *same* limit: it never pays above the original
+        signal+slippage (or the strategy cap), it just gives the top of book
+        another chance before the window closes. ``ask_above_limit`` is a
+        deliberate skip and is never retried.
+        """
+        settings = self.settings
+        fill = await self._entry_fak(market, decision, quote, limit, notional)
+        retries = 0
+        while (
+            not fill.ok
+            and fill.error in ("no_match", "no_fill")
+            and retries < settings.EXEC_FAK_RETRIES
+            and aw.end_ts - self._now() > settings.EXEC_FAK_RETRY_MIN_REMAINING_S
+            and not self.db.trade_exists(
+                aw.slot, self.broker.mode, settings.PERIOD, self.asset)
+        ):
+            retries += 1
+            remaining = aw.end_ts - self._now()
+            log.info(
+                "exec.fak_retry", slot=aw.slot, attempt=retries,
+                limit=limit, ask=quote.ask(decision.side),
+                remaining=round(remaining, 1),
+            )
+            delay = float(settings.EXEC_FAK_RETRY_DELAY_S)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                fresh = await asyncio.wait_for(
+                    self.market_svc.fetch_quote(
+                        market, with_books=True,
+                        ws_max_age=EXEC_QUOTE_WS_MAX_AGE,
+                    ),
+                    timeout=3.0,
+                )
+            except Exception:  # noqa: BLE001
+                break
+            aw.quote = fresh
+            aw.quote_ts = self._now()
+            # The refresh itself can consume seconds; never send a retry into
+            # an already-closed window.
+            if aw.end_ts - self._now() <= settings.EXEC_FAK_RETRY_MIN_REMAINING_S:
+                break
+            # A retry must honour the same entry filters as the first send:
+            # a collapse between attempts means the signal reversed, and a
+            # blown-out spread means we would be crossing a much worse book.
+            current = fresh.price(decision.side, settings.SIGNAL_PRICE_SOURCE)
+            if current is None \
+                    or current < settings.ENTRY_THRESHOLD - EXEC_REVERSAL_TOLERANCE:
+                log.warning("exec.fak_retry_reversed", slot=aw.slot,
+                            signal=decision.price, current=current,
+                            threshold=settings.ENTRY_THRESHOLD)
+                break
+            spread = fresh.spread(decision.side)
+            if settings.MAX_SPREAD_AT_ENTRY > 0 and spread is not None \
+                    and spread > settings.MAX_SPREAD_AT_ENTRY:
+                log.warning("exec.fak_retry_spread", slot=aw.slot,
+                            spread=spread,
+                            max_spread=settings.MAX_SPREAD_AT_ENTRY)
+                break
+            quote = fresh
+            fill = await self._entry_fak(
+                market, decision, quote, limit, notional)
+        return fill, retries
 
     async def _wait_limit_fill(self, order, aw: ActiveWindow,
                                market: MarketInfo) -> "LimitFill":

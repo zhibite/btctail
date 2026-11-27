@@ -225,6 +225,13 @@ class Settings(BaseSettings):
     SIGNAL_PRICE_SOURCE: str = "mid"   # mid | last | ask
     EXEC_SLIPPAGE: float = 0.01
     EXEC_LIMIT_MAX: float = 0.99
+    # A FAK the exchange did not match is killed outright: nothing rests, so
+    # retrying cannot double the position. Retries reuse the same limit (never
+    # a higher price) and only give the top of book a moment to come back.
+    # They stop once the window has less than the minimum remaining time.
+    EXEC_FAK_RETRIES: int = 2
+    EXEC_FAK_RETRY_DELAY_S: float = 0.5
+    EXEC_FAK_RETRY_MIN_REMAINING_S: float = 3.0
     MAX_SPREAD_AT_ENTRY: float = 0.06  # 0 disables
     MIN_BOOK_DEPTH_USD: float = 0.0    # 0 disables; checks depth at/below limit
     # Official Polymarket fees (docs.polymarket.com/trading/fees):
@@ -560,6 +567,12 @@ class Settings(BaseSettings):
             errors.append("STAKE_USD 必须 > 0")
         if self.EXEC_SLIPPAGE < 0:
             errors.append("EXEC_SLIPPAGE 不能为负")
+        if self.EXEC_FAK_RETRIES < 0:
+            errors.append("EXEC_FAK_RETRIES 不能为负")
+        if self.EXEC_FAK_RETRY_DELAY_S < 0:
+            errors.append("EXEC_FAK_RETRY_DELAY_S 不能为负")
+        if self.EXEC_FAK_RETRY_MIN_REMAINING_S < 0:
+            errors.append("EXEC_FAK_RETRY_MIN_REMAINING_S 不能为负")
         if self.TAKER_FEE_RATE < 0 or self.TAKER_FEE_RATE > 0.5:
             errors.append("TAKER_FEE_RATE 必须在 [0, 0.5] 内")
         if self.TAKER_FEE_RATE_BTC_5M15M < 0 or self.TAKER_FEE_RATE_BTC_5M15M > 0.5:
@@ -636,6 +649,15 @@ TUNABLE_SPECS: dict[str, dict] = {
     "EXEC_SLIPPAGE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.05, "step": 0.001,
                       "label": "执行滑点上限",
                       "help": "GTD/FAK 限价 = 信号价 + 该值。回测敏感性 0.005 / 0.01。"},
+    "EXEC_FAK_RETRIES": {"group": "execution", "type": "int", "min": 0, "max": 5, "step": 1,
+                         "label": "FAK 重试次数",
+                         "help": "仅对交易所明确未匹配（no_match/no_fill）的同价重试；0=关闭。"},
+    "EXEC_FAK_RETRY_DELAY_S": {"group": "execution", "type": "float", "min": 0.0, "max": 5.0, "step": 0.1,
+                               "label": "FAK 重试间隔(秒)",
+                               "help": "每次重试前等待；重试仍用同一个限价，不会追价。"},
+    "EXEC_FAK_RETRY_MIN_REMAINING_S": {"group": "execution", "type": "float", "min": 0.0, "max": 30.0, "step": 0.5,
+                                       "label": "重试截止(剩余秒)",
+                                       "help": "距收盘少于该值就不再重试，避免最后几秒下单。"},
     "ENTRY_ORDER_TYPE": {"group": "execution", "type": "str", "options": ["limit", "gtd", "fak"],
                          "label": "下单方式",
                          "hidden": True,

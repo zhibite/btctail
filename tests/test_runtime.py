@@ -110,6 +110,27 @@ class FakeBroker(Broker):
                          fee=fee, fee_rate=0.07, order_id="fake-1")
 
 
+class RetryBroker(FakeBroker):
+    """FakeBroker that fails the first N buys with the given errors."""
+
+    def __init__(self, errors: list[str]):
+        super().__init__()
+        self.errors = list(errors)
+        self.buy_attempts = 0
+
+    async def buy(self, market, side, signal_price, stake, limit_price, quote=None):
+        self.buy_attempts += 1
+        if self.errors:
+            error = self.errors.pop(0)
+            self.calls.append({
+                "side": side, "signal_price": signal_price,
+                "stake": stake, "limit": limit_price, "error": error,
+            })
+            return EntryFill(False, error=error)
+        return await super().buy(
+            market, side, signal_price, stake, limit_price, quote)
+
+
 def make_market() -> MarketInfo:
     return MarketInfo(
         asset="BTC", period="15m", slot=SLOT,
@@ -159,6 +180,18 @@ def settings_strategy(settings):
     from src.strategy.late_favorite import StrategyParams
 
     return StrategyParams(**settings.strategy_params())
+
+
+def fak_settings(tmp_path, **overrides):
+    values = dict(
+        DATA_COLLECT_ENABLED=False, DATA_DIR=str(tmp_path),
+        TRADING_MODE="paper", MAX_SPREAD_AT_ENTRY=0.10,
+        MIN_WALLET_BALANCE_USD=0, ENTRY_WINDOW_SEC=60,
+        ENTRY_THRESHOLD=0.90, CONFIRM_SEC=10, MAX_ENTRY_PRICE=0.94,
+        ENTRY_ORDER_TYPE="fak", EXEC_FAK_RETRY_DELAY_S=0.0,
+    )
+    values.update(overrides)
+    return Settings(**values)
 
 
 async def test_entry_confirm_and_settlement(tmp_path):
@@ -271,6 +304,89 @@ async def test_execution_never_pays_above_the_price_cap(tmp_path):
     assert broker.calls == []
     assert db.recent_trades() == []
     assert db.recent_signals()[0]["skip_reason"] == "ask_above_limit"
+
+
+async def test_fak_retry_fills_after_no_match(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    broker = RetryBroker(["no_match"])
+    runtime, db, aw, svc, pm = build(
+        tmp_path,
+        [quote(END - 28, 0.93), quote(END - 27, 0.93)],
+        broker=broker,
+        settings=fak_settings(tmp_path, EXEC_FAK_RETRIES=2),
+    )
+    set_clock(runtime, END - 28)
+    decision = EntryDecision(
+        side=Side.UP, price=0.93, trigger_price=0.90,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    # One failed attempt plus one retry, both at the same limit.
+    assert broker.buy_attempts == 2
+    assert {call["limit"] for call in broker.calls} == {0.94}
+    assert len(db.recent_trades()) == 1
+    assert db.recent_signals()[0]["decision"] == "enter"
+
+
+async def test_fak_retry_is_not_used_for_other_errors(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    broker = RetryBroker(["timeout"])
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 28, 0.93)], broker=broker,
+        settings=fak_settings(tmp_path, EXEC_FAK_RETRIES=2),
+    )
+    set_clock(runtime, END - 28)
+    decision = EntryDecision(
+        side=Side.UP, price=0.93, trigger_price=0.90,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    assert broker.buy_attempts == 1
+    assert db.recent_trades() == []
+    assert db.recent_signals()[0]["skip_reason"] == "execution_failed:timeout"
+
+
+async def test_fak_retry_stops_if_the_signal_reverses(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    broker = RetryBroker(["no_match"])
+    runtime, db, aw, svc, pm = build(
+        tmp_path,
+        [quote(END - 28, 0.93), quote(END - 27, 0.70)],
+        broker=broker,
+        settings=fak_settings(tmp_path, EXEC_FAK_RETRIES=2),
+    )
+    set_clock(runtime, END - 28)
+    decision = EntryDecision(
+        side=Side.UP, price=0.93, trigger_price=0.90,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    # The book collapsed after the no_match; a retry would be a different bet.
+    assert broker.buy_attempts == 1
+    assert db.recent_trades() == []
+    assert db.recent_signals()[0]["skip_reason"] == "execution_failed:no_match"
+
+
+async def test_fak_retry_stops_near_window_end(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    broker = RetryBroker(["no_match"])
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 2, 0.93)], broker=broker,
+        settings=fak_settings(tmp_path, EXEC_FAK_RETRIES=2),
+    )
+    set_clock(runtime, END - 2)
+    decision = EntryDecision(
+        side=Side.UP, price=0.93, trigger_price=0.90,
+        trigger_ts=END - 4, confirm_ts=END - 2, first_cross_ts=END - 4,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 2), END - 2)
+    assert broker.buy_attempts == 1
+    assert db.recent_trades() == []
+    assert db.recent_signals()[0]["skip_reason"] == "execution_failed:no_match"
 
 
 async def test_voided_market_settles_as_void(tmp_path):
