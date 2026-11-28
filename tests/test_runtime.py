@@ -110,6 +110,10 @@ class FakeBroker(Broker):
                          fee=fee, fee_rate=0.07, order_id="fake-1")
 
 
+class LiveFakeBroker(FakeBroker):
+    mode = "live"
+
+
 class RetryBroker(FakeBroker):
     """FakeBroker that fails the first N buys with the given errors."""
 
@@ -304,6 +308,31 @@ async def test_execution_never_pays_above_the_price_cap(tmp_path):
     assert broker.calls == []
     assert db.recent_trades() == []
     assert db.recent_signals()[0]["skip_reason"] == "ask_above_limit"
+
+
+async def test_live_entry_can_be_sized_in_shares(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    broker = LiveFakeBroker()
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 28, 0.93)], broker=broker,
+        settings=fak_settings(tmp_path, TRADING_MODE="live",
+                              ENTRY_SHARES_LIVE=10.0),
+    )
+    set_clock(runtime, END - 28)
+    decision = EntryDecision(
+        side=Side.UP, price=0.93, trigger_price=0.90,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    # limit 0.94 on a 0.01 tick → amount = 10 × 0.94 = 9.40 USDC, so the
+    # SDK's taker amount is exactly 10 shares (no repeating decimals).
+    assert broker.calls[0]["stake"] == pytest.approx(9.40)
+    trade = db.recent_trades()[0]
+    assert trade["mode"] == "live"
+    assert trade["stake"] == pytest.approx(9.40)
+    extra = json.loads(trade["extra"] or "{}")
+    assert extra["planned_shares"] == pytest.approx(10.0)
 
 
 async def test_fak_retry_fills_after_no_match(tmp_path):

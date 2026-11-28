@@ -658,7 +658,15 @@ class Runtime:
             return
 
         # Paper and live have independent budgets (default 10 / 5 USDC).
-        notional = round(float(settings.entry_notional_for(mode)), 2)
+        # A live share target overrides the USDC budget; the risk check uses
+        # the maximum possible cost (shares × the strategy cap) because the
+        # actual limit is only known after the fresh quote.
+        shares_target = settings.entry_shares_for(mode)
+        if shares_target > 0:
+            cap = min(settings.EXEC_LIMIT_MAX, settings.MAX_ENTRY_PRICE)
+            notional = round(shares_target * cap, 2)
+        else:
+            notional = round(float(settings.entry_notional_for(mode)), 2)
         # Balance and risk run *before* the final quote refresh: a balance
         # query that has to hit the network must not age the execution quote
         # and let the top of book move between the check and the order.
@@ -741,7 +749,15 @@ class Runtime:
         # GTD/FAK orders at the CLOB are share-sized for limit orders; derive
         # the share count from the USDC budget at the maximum price we would
         # pay, so a full fill never costs more than the configured notional.
-        shares = round_down(notional / limit, 0.0001) if limit > 0 else 0.0
+        # A live share target sizes the order directly; the USDC amount is
+        # shares × tick-rounded limit, which makes the SDK's taker amount
+        # exactly that share count (inside the CLOB's 4-decimal rule).
+        if shares_target > 0:
+            price_q = round_down(limit, market.tick_size)
+            shares = round_down(shares_target, 0.0001) if price_q > 0 else 0.0
+            notional = round(shares * price_q, 2) if shares > 0 else 0.0
+        else:
+            shares = round_down(notional / limit, 0.0001) if limit > 0 else 0.0
         if shares <= 0:
             self._record_signal(aw, decision="skip", skip_reason="invalid_order_size",
                                 decision_obj=decision, confirm_price=current)

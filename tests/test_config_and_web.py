@@ -448,3 +448,12 @@ def test_entry_limit_is_capped_by_the_strategy_max_price():
     # which let a FAK fill above the stated 0.96 cap.
     assert settings.entry_limit_for(0.955) == pytest.approx(0.96)
     assert settings.entry_limit_for(0.90) == pytest.approx(0.93)
+
+
+def test_live_share_sizing_is_validated_and_live_only():
+    settings = Settings(ENTRY_SHARES_LIVE=10.0, ENTRY_NOTIONAL_USD_LIVE=10.0)
+    assert settings.entry_shares_for("live") == pytest.approx(10.0)
+    assert settings.entry_shares_for("paper") == 0.0
+    # A sub-5-share live order is below the CLOB limit-order minimum.
+    errors = Settings(ENTRY_SHARES_LIVE=3.0).validation_errors()
+    assert any("ENTRY_SHARES_LIVE" in message for message in errors)

@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     # live at a smaller 5 U size without changing its paper record.
     ENTRY_NOTIONAL_USD_PAPER: float = 10.0
     ENTRY_NOTIONAL_USD_LIVE: float = 5.0
+    # When > 0, live FAK entries are sized in shares instead of USDC. The
+    # order amount becomes shares × tick-rounded limit, which makes the
+    # SDK's taker amount exactly the configured share count and avoids the
+    # CLOB's "taker amount max 4 decimals" rejection when the USDC budget
+    # does not divide cleanly by the price. 0 keeps the USDC budget.
+    ENTRY_SHARES_LIVE: float = 0.0
     # Legacy/backtest notional. ``for_strategy`` mirrors the paper size here
     # so research and paper execution stay aligned.
     ENTRY_NOTIONAL_USD: float = 10.0
@@ -394,6 +400,13 @@ class Settings(BaseSettings):
             return float(self.ENTRY_NOTIONAL_USD_LIVE)
         return float(self.ENTRY_NOTIONAL_USD_PAPER)
 
+    def entry_shares_for(self, mode: str | None = None) -> float:
+        """Live share count for one entry, or 0 to use the USDC budget."""
+        resolved = (mode or self.TRADING_MODE or "paper").strip().lower()
+        if resolved != "live":
+            return 0.0
+        return float(self.ENTRY_SHARES_LIVE or 0.0)
+
     @property
     def default_taker_fee_rate(self) -> float:
         """Official category taker rate for this strategy's market.
@@ -597,6 +610,10 @@ class Settings(BaseSettings):
                     f"GTD 挂单最少 5 股；请把 {name} 提高到至少 "
                     "5 × 入场价上限，或改用 fak"
                 )
+        if self.ENTRY_SHARES_LIVE < 0:
+            errors.append("ENTRY_SHARES_LIVE 不能为负")
+        if 0 < self.ENTRY_SHARES_LIVE < 5:
+            errors.append("ENTRY_SHARES_LIVE 至少 5 股（或设为 0 按金额）")
         if self.GTD_FILL_TIMEOUT_S <= 0:
             errors.append("GTD_FILL_TIMEOUT_S 必须 > 0")
         if self.MAKER_FEE_RATE < 0 or self.MAKER_FEE_RATE > 0.5:
@@ -646,6 +663,12 @@ TUNABLE_SPECS: dict[str, dict] = {
                                 "min": 1, "max": 100000, "step": 1,
                                 "label": "实盘单笔金额(USDC)",
                                 "help": "实盘模式每笔投入；14 个策略共用；默认 5U。"},
+    "ENTRY_SHARES_LIVE": {"group": "sizing", "type": "float",
+                          "min": 0, "max": 1000, "step": 1,
+                          "label": "实盘单笔股数（0=按金额）",
+                          "help": ">0 时按股数下单：FAK 金额=股数×tick取整后的限价，"
+                                  "taker 数量正好是股数，避免 USDC 金额除不尽导致的精度错误；"
+                                  "至少 5 股。"},
     "EXEC_SLIPPAGE": {"group": "execution", "type": "float", "min": 0.0, "max": 0.05, "step": 0.001,
                       "label": "执行滑点上限",
                       "help": "GTD/FAK 限价 = 信号价 + 该值。回测敏感性 0.005 / 0.01。"},
