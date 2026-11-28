@@ -77,6 +77,38 @@ async def test_signal_price_fallback_respects_the_limit(broker):
     assert fill.avg_price == pytest.approx(0.94)
 
 
+async def test_share_sized_fill_caps_at_the_requested_shares(broker):
+    quote = Quote(ts=0, up_mid=0.93, up_book=book([(0.90, 20.0)]))
+    fill = await broker.buy_shares(
+        market(), Side.UP, 10.0, 0.95, quote=quote, signal_price=0.93
+    )
+    assert fill.ok
+    assert fill.shares == pytest.approx(10.0)
+    assert fill.cost == pytest.approx(9.0)
+    assert fill.avg_price == pytest.approx(0.90)
+    assert fill.partial is False
+
+
+async def test_share_sized_fill_is_partial_when_depth_is_thin(broker):
+    quote = Quote(ts=0, up_mid=0.93, up_book=book([(0.93, 2.0)]))
+    fill = await broker.buy_shares(
+        market(), Side.UP, 10.0, 0.95, quote=quote, signal_price=0.93
+    )
+    assert fill.shares == pytest.approx(2.0)
+    assert fill.cost == pytest.approx(1.86)
+    assert fill.partial is True
+
+
+async def test_share_sized_fill_falls_back_to_the_signal_price(broker):
+    fill = await broker.buy_shares(
+        market(), Side.UP, 10.0, 0.94, quote=None, signal_price=0.92
+    )
+    assert fill.ok
+    assert fill.shares == pytest.approx(10.0)
+    assert fill.avg_price == pytest.approx(0.925)
+    assert fill.cost == pytest.approx(9.25)
+
+
 def test_fee_rate_prefers_market_value(tmp_path):
     settings = Settings(DATA_DIR=str(tmp_path), TAKER_FEE_RATE=0.01,
                         TAKER_FEE_RATE_BTC_5M15M=0.05,

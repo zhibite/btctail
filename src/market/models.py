@@ -134,3 +134,25 @@ class OrderBook:
         if shares <= 0:
             return 0.0, 0.0
         return shares, spent / shares
+
+    def fill_for_shares(self, shares: float, limit_price: float) -> tuple[float, float]:
+        """Walk the ask side for `shares`. Returns (filled_shares, cost).
+
+        Filled shares is capped at the requested count, unlike
+        ``fill_for_notional`` which can overfill when the book is cheaper.
+        """
+        remaining = shares
+        filled = 0.0
+        spent = 0.0
+        for level in self.asks:
+            if level.price > limit_price + 1e-9 or level.size <= 0:
+                continue
+            take = min(remaining, level.size)
+            filled += take
+            spent += take * level.price
+            remaining -= take
+            if remaining <= 1e-9:
+                break
+        if filled <= 0:
+            return 0.0, 0.0
+        return filled, spent

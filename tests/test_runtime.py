@@ -109,9 +109,47 @@ class FakeBroker(Broker):
         return EntryFill(True, shares=shares, cost=stake, avg_price=price,
                          fee=fee, fee_rate=0.07, order_id="fake-1")
 
+    async def buy_shares(self, market, side, shares, limit_price, quote=None,
+                         signal_price=0.0):
+        self.calls.append({
+            "side": side, "shares": shares, "limit": limit_price,
+            "signal_price": signal_price, "sized": "shares",
+        })
+        price = self.fill_price if self.fill_price is not None else min(
+            limit_price, (signal_price or limit_price) + 0.005
+        )
+        price = min(price, limit_price)
+        cost = shares * price
+        fee = shares * 0.07 * price * (1 - price)
+        return EntryFill(True, shares=shares, cost=cost, avg_price=price,
+                         fee=fee, fee_rate=0.07, order_id="fake-shares")
+
 
 class LiveFakeBroker(FakeBroker):
     mode = "live"
+
+
+class PartialShareBroker(LiveFakeBroker):
+    async def buy_shares(self, market, side, shares, limit_price, quote=None,
+                         signal_price=0.0):
+        return EntryFill(True, shares=5.0, cost=4.75, avg_price=0.95,
+                         fee=0.001, fee_rate=0.07, order_id="partial-shares",
+                         partial=True)
+
+
+class ShareRetryBroker(LiveFakeBroker):
+    def __init__(self, errors: list[str]):
+        super().__init__()
+        self.errors = list(errors)
+        self.share_attempts = 0
+
+    async def buy_shares(self, market, side, shares, limit_price, quote=None,
+                         signal_price=0.0):
+        self.share_attempts += 1
+        if self.errors:
+            return EntryFill(False, error=self.errors.pop(0))
+        return await super().buy_shares(
+            market, side, shares, limit_price, quote, signal_price)
 
 
 class RetryBroker(FakeBroker):
@@ -310,7 +348,7 @@ async def test_execution_never_pays_above_the_price_cap(tmp_path):
     assert db.recent_signals()[0]["skip_reason"] == "ask_above_limit"
 
 
-async def test_live_entry_can_be_sized_in_shares(tmp_path):
+async def test_live_entry_uses_a_share_sized_fak_limit_order(tmp_path):
     from src.strategy.late_favorite import EntryDecision
 
     broker = LiveFakeBroker()
@@ -325,14 +363,64 @@ async def test_live_entry_can_be_sized_in_shares(tmp_path):
         trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
     )
     await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
-    # limit 0.94 on a 0.01 tick → amount = 10 × 0.94 = 9.40 USDC, so the
-    # SDK's taker amount is exactly 10 shares (no repeating decimals).
-    assert broker.calls[0]["stake"] == pytest.approx(9.40)
+    # Strict share sizing: a FAK limit for exactly 10 shares at 0.94, not a
+    # 10 USDC market order that could overfill on a cheaper book.
+    assert broker.calls[0]["sized"] == "shares"
+    assert broker.calls[0]["shares"] == pytest.approx(10.0)
+    assert broker.calls[0]["limit"] == pytest.approx(0.94)
     trade = db.recent_trades()[0]
     assert trade["mode"] == "live"
+    assert trade["shares"] == pytest.approx(10.0)
     assert trade["stake"] == pytest.approx(9.40)
+    assert trade["cost"] == pytest.approx(9.35)
     extra = json.loads(trade["extra"] or "{}")
     assert extra["planned_shares"] == pytest.approx(10.0)
+    assert extra["partial"] is False
+
+
+async def test_share_sized_entry_can_partially_fill(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    broker = PartialShareBroker()
+    runtime, db, aw, svc, pm = build(
+        tmp_path, [quote(END - 28, 0.93)], broker=broker,
+        settings=fak_settings(tmp_path, TRADING_MODE="live",
+                              ENTRY_SHARES_LIVE=10.0),
+    )
+    set_clock(runtime, END - 28)
+    decision = EntryDecision(
+        side=Side.UP, price=0.93, trigger_price=0.90,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    trade = db.recent_trades()[0]
+    assert trade["shares"] == pytest.approx(5.0)
+    assert trade["cost"] == pytest.approx(4.75)
+    extra = json.loads(trade["extra"] or "{}")
+    assert extra["partial"] is True
+
+
+async def test_share_sized_fak_retries_at_the_same_size(tmp_path):
+    from src.strategy.late_favorite import EntryDecision
+
+    broker = ShareRetryBroker(["no_match"])
+    runtime, db, aw, svc, pm = build(
+        tmp_path,
+        [quote(END - 28, 0.93), quote(END - 27, 0.93)],
+        broker=broker,
+        settings=fak_settings(tmp_path, TRADING_MODE="live",
+                              ENTRY_SHARES_LIVE=10.0, EXEC_FAK_RETRIES=2),
+    )
+    set_clock(runtime, END - 28)
+    decision = EntryDecision(
+        side=Side.UP, price=0.93, trigger_price=0.90,
+        trigger_ts=END - 30, confirm_ts=END - 28, first_cross_ts=END - 30,
+    )
+    await runtime._execute(aw, decision, Quote(ts=END - 28), END - 28)
+    assert broker.share_attempts == 2
+    trade = db.recent_trades()[0]
+    assert trade["shares"] == pytest.approx(10.0)
+    assert trade["stake"] == pytest.approx(9.40)
 
 
 async def test_fak_retry_fills_after_no_match(tmp_path):

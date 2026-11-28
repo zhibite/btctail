@@ -435,6 +435,136 @@ class ClobClient:
                  status=resp.get("status"))
         return OrderAck(True, order_id=order_id, placed_size=size_q, price=price_q)
 
+    async def place_fak_limit_buy(
+        self,
+        token_id: str,
+        shares: float,
+        limit_price: float,
+        tick_size: float,
+        *,
+        position_id: str = "",
+        neg_risk: bool = False,
+    ) -> FillResult:
+        """Share-sized taker BUY: FAK limit at `limit_price`, no resting order.
+
+        Unlike ``place_fak_buy`` (a USDC-sized market order), this fills at
+        most ``shares`` and spends at most ``shares × limit_price``. It is the
+        only way to cap a position by share count: a USDC-sized FAK spends
+        the whole budget and buys more shares when the book is cheaper.
+        """
+        if self._client is None:
+            return FillResult(False, error=self._init_error or "clob not configured")
+        price_q = round_down(limit_price, tick_size)
+        size_q = round_down(shares, tick_size)
+        if price_q <= 0 or size_q <= 0:
+            return FillResult(False, error="invalid size/price")
+        if size_q < 5.0:
+            return FillResult(False, error="limit order needs at least 5 shares")
+
+        try:
+            from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions
+
+            order_asset = (
+                {"position_id": position_id} if position_id else {"token_id": token_id}
+            )
+            args = OrderArgs(
+                price=float(price_q),
+                size=float(size_q),
+                side="BUY",
+                **order_asset,
+            )
+            options = PartialCreateOrderOptions(
+                tick_size=str(tick_size), neg_risk=bool(neg_risk)
+            )
+            # FAK: fill whatever is available at <= price_q, kill the rest.
+            resp = await self._run(
+                self._client.create_and_post_order,
+                args,
+                options=options,
+                order_type=OrderType.FAK,
+                post_only=False,
+                timeout=25.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+            if "no orders found to match" in message.lower():
+                log.warning("clob.fak_limit_no_fill", token=token_id[:16],
+                            shares=size_q, price=price_q)
+                return FillResult(False, error="no_match")
+            log.warning("clob.fak_limit_failed", token=token_id[:16],
+                        error=message, shares=size_q, price=price_q)
+            return FillResult(False, error=message)
+
+        if not isinstance(resp, dict):
+            return FillResult(False, error=f"unexpected response: {type(resp).__name__}")
+        order_id = str(resp.get("orderID") or resp.get("order_id") or "")
+        if not order_id:
+            return FillResult(False, error=str(
+                resp.get("errorMsg") or resp.get("error") or "no orderID"
+            ))
+
+        state = await self._fak_limit_state(order_id)
+        if state is None:
+            # The POST was accepted but the order cannot be read back. A FAK
+            # never rests, so do not report no_match (a retry could double the
+            # position); let the runtime reconcile the wallet instead.
+            return FillResult(False, order_id=order_id, error="unknown_fill", raw=resp)
+
+        try:
+            matched = float(state.get("size_matched") or 0.0)
+        except (TypeError, ValueError):
+            matched = 0.0
+        status = str(state.get("status") or "").lower()
+        if matched <= 0:
+            if status in ("canceled", "cancelled", "unmatched", "expired"):
+                log.info("clob.fak_limit_no_match", token=token_id[:16],
+                         order_id=order_id[:16], status=status)
+                return FillResult(False, order_id=order_id, error="no_match",
+                                  raw=state)
+            return FillResult(False, order_id=order_id, error="unknown_fill",
+                              raw=state)
+
+        filled = min(matched, size_q)
+        actual = await self.get_order_fills(order_id, token_id)
+        if actual is not None:
+            shares_f, avg = actual
+            shares_f = min(shares_f, filled)
+            return FillResult(
+                True, order_id=order_id, shares=shares_f,
+                cost=shares_f * avg, avg_price=avg, fee=None, raw=state,
+            )
+        # The fill exists but the trade history is not readable yet. The size
+        # is exact; pricing at the limit is conservative (actual fills are at
+        # or below it) and keeps the accounting on the safe side.
+        log.warning("clob.fak_limit_fill_price_missing",
+                    order_id=order_id[:16], matched=filled)
+        return FillResult(
+            True, order_id=order_id, shares=filled,
+            cost=filled * price_q, avg_price=price_q, fee=None, raw=state,
+        )
+
+    async def _fak_limit_state(self, order_id: str) -> Optional[dict]:
+        """Read a fresh FAK back from the CLOB, tolerating a short lag."""
+        deadline = time.monotonic() + 2.0
+        last: Optional[dict] = None
+        while True:
+            state = await self.get_order(order_id)
+            if isinstance(state, dict):
+                last = state
+                try:
+                    matched = float(state.get("size_matched") or 0.0)
+                except (TypeError, ValueError):
+                    matched = 0.0
+                status = str(state.get("status") or "").lower()
+                if matched > 0 or status in (
+                    "matched", "filled", "canceled", "cancelled",
+                    "unmatched", "expired",
+                ):
+                    return state
+            if time.monotonic() >= deadline:
+                return last
+            await asyncio.sleep(0.2)
+
     async def cancel_order(self, order_id: str) -> bool:
         if self._client is None or not order_id:
             return False

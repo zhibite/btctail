@@ -819,7 +819,8 @@ class Runtime:
                 if (not use_limit and settings.ENTRY_FALLBACK_FAK
                         and aw.end_ts - self._now() > 3.0):
                     fill, retries = await self._entry_fak_with_retry(
-                        aw, market, decision, fresh, limit, notional)
+                        aw, market, decision, fresh, limit, notional,
+                        shares if shares_target > 0 else None)
                     fresh = aw.quote or fresh
                     ask = fresh.ask(decision.side)
                     book = fresh.book(decision.side)
@@ -898,7 +899,8 @@ class Runtime:
                             and remaining > 3.0):
                         entry_info["fallback"] = "fak"
                         fill, retries = await self._entry_fak_with_retry(
-                            aw, market, decision, fresh, limit, notional)
+                            aw, market, decision, fresh, limit, notional,
+                            shares if shares_target > 0 else None)
                         fresh = aw.quote or fresh
                         ask = fresh.ask(decision.side)
                         book = fresh.book(decision.side)
@@ -920,7 +922,8 @@ class Runtime:
                         return
         else:
             fill, retries = await self._entry_fak_with_retry(
-                aw, market, decision, fresh, limit, notional)
+                aw, market, decision, fresh, limit, notional,
+                shares if shares_target > 0 else None)
             fresh = aw.quote or fresh
             ask = fresh.ask(decision.side)
             book = fresh.book(decision.side)
@@ -1035,11 +1038,22 @@ class Runtime:
         )
 
     async def _entry_fak(self, market: MarketInfo, decision: EntryDecision,
-                         quote: Quote, limit: float, notional: float) -> EntryFill:
-        """Taker entry spending `notional` USDC, crossing no higher than `limit`."""
+                         quote: Quote, limit: float, notional: float,
+                         shares: float | None = None) -> EntryFill:
+        """Taker entry crossing no higher than `limit`.
+
+        ``shares`` switches to a strict share-sized FAK limit order (fills at
+        most that many shares); without it the order is a USDC-sized market
+        FAK spending `notional`.
+        """
         ask = quote.ask(decision.side)
         if ask is not None and ask > limit + 1e-9:
             return EntryFill(False, error="ask_above_limit")
+        if shares is not None:
+            return await self.broker.buy_shares(
+                market=market, side=decision.side, shares=shares,
+                limit_price=limit, quote=quote, signal_price=decision.price,
+            )
         return await self.broker.buy(
             market=market, side=decision.side, signal_price=decision.price,
             stake=round(float(notional), 2), limit_price=limit, quote=quote,
@@ -1048,6 +1062,7 @@ class Runtime:
     async def _entry_fak_with_retry(
         self, aw: ActiveWindow, market: MarketInfo, decision: EntryDecision,
         quote: Quote, limit: float, notional: float,
+        shares: float | None = None,
     ) -> tuple[EntryFill, int]:
         """Send the FAK, retrying only a definitive exchange-side no-fill.
 
@@ -1059,7 +1074,8 @@ class Runtime:
         deliberate skip and is never retried.
         """
         settings = self.settings
-        fill = await self._entry_fak(market, decision, quote, limit, notional)
+        fill = await self._entry_fak(
+            market, decision, quote, limit, notional, shares)
         retries = 0
         while (
             not fill.ok
@@ -1114,7 +1130,7 @@ class Runtime:
                 break
             quote = fresh
             fill = await self._entry_fak(
-                market, decision, quote, limit, notional)
+                market, decision, quote, limit, notional, shares)
         return fill, retries
 
     async def _wait_limit_fill(self, order, aw: ActiveWindow,

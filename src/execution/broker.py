@@ -69,6 +69,17 @@ class Broker:
     ) -> EntryFill:  # pragma: no cover - interface
         raise NotImplementedError
 
+    async def buy_shares(
+        self,
+        market: MarketInfo,
+        side: Side,
+        shares: float,
+        limit_price: float,
+        quote: Optional[Quote] = None,
+        signal_price: float = 0.0,
+    ) -> EntryFill:  # pragma: no cover - interface
+        raise NotImplementedError
+
     async def place_limit_buy(
         self, market: MarketInfo, side: Side, shares: float, price: float,
         post_only: bool = True,
@@ -205,6 +216,47 @@ class PaperBroker(Broker):
             extra={"source": "signal", "limit": limit_price},
         )
 
+    async def buy_shares(
+        self,
+        market: MarketInfo,
+        side: Side,
+        shares: float,
+        limit_price: float,
+        quote: Optional[Quote] = None,
+        signal_price: float = 0.0,
+    ) -> EntryFill:
+        book = quote.book(side) if quote is not None else None
+        fee_rate = resolve_fee_rate(self._settings, market)
+
+        if self._settings.PAPER_USE_BOOK and book is not None and book.asks:
+            filled, spent = book.fill_for_shares(shares, limit_price)
+            if filled > 0:
+                avg_price = spent / filled
+                fee = taker_fee(filled, avg_price, fee_rate)
+                return EntryFill(
+                    True, shares=filled, cost=spent, avg_price=avg_price,
+                    fee=fee, fee_rate=fee_rate,
+                    order_id=f"paper-{int(time.time()*1000)}",
+                    partial=filled < shares - 1e-9,
+                    extra={"source": "book_shares", "limit": limit_price,
+                           "depth": round(book.depth_at_or_below(limit_price), 4)},
+                )
+
+        # No usable book: fill the requested count at the signal price plus
+        # the configured paper slippage, capped by the limit.
+        base = signal_price or limit_price
+        fill_price = min(limit_price, base + self._settings.PAPER_SLIPPAGE)
+        fill_price = round(max(fill_price, 0.01), 4)
+        if fill_price <= 0 or fill_price >= 1:
+            return EntryFill(False, error="paper_invalid_price")
+        cost = shares * fill_price
+        fee = taker_fee(shares, fill_price, fee_rate)
+        return EntryFill(
+            True, shares=shares, cost=cost, avg_price=fill_price, fee=fee,
+            fee_rate=fee_rate, order_id=f"paper-{int(time.time()*1000)}",
+            extra={"source": "signal_shares", "limit": limit_price},
+        )
+
 
 class LiveBroker(Broker):
     mode = "live"
@@ -306,6 +358,43 @@ class LiveBroker(Broker):
             order_id=result.order_id,
             partial=result.cost < stake * 0.98,
             extra={"source": "clob", "limit": limit_price, "signal_price": signal_price},
+        )
+
+    async def buy_shares(
+        self,
+        market: MarketInfo,
+        side: Side,
+        shares: float,
+        limit_price: float,
+        quote: Optional[Quote] = None,
+        signal_price: float = 0.0,
+    ) -> EntryFill:
+        fee_rate = resolve_fee_rate(self._settings, market)
+        result = await self._clob.place_fak_limit_buy(
+            token_id=market.token_for(side),
+            shares=shares,
+            limit_price=limit_price,
+            tick_size=market.tick_size,
+            position_id=market.position_for(side),
+            neg_risk=market.neg_risk,
+        )
+        if not result.filled:
+            return EntryFill(False, error=result.error or "no_fill")
+
+        fee = result.fee
+        if fee is None:
+            fee = taker_fee(result.shares, result.avg_price, fee_rate)
+        return EntryFill(
+            True,
+            shares=result.shares,
+            cost=result.cost,
+            avg_price=result.avg_price,
+            fee=fee,
+            fee_rate=fee_rate,
+            order_id=result.order_id,
+            partial=result.shares < shares - 1e-9,
+            extra={"source": "clob_limit", "limit": limit_price,
+                   "shares_requested": shares, "signal_price": signal_price},
         )
 
 
